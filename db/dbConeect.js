@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Product = require('../models/Products.model');
 const Admin = require('../models/Admin.model');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 
 const connectDB = async () => {
   try {

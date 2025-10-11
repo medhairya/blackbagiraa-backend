@@ -1,5 +1,5 @@
 const User = require('../models/User.model');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createUser } = require('../services/User.service');
 const Blacklist = require('../models/Blacklist.model'); // Import the Blacklist model
