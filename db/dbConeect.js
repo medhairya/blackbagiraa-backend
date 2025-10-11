@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 
 const connectDB = async () => {
   try {
+    console.log('🔍 Using Mongo URI:', process.env.MONGODB_URI ? 'Loaded ✅' : 'Missing ❌');
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('MongoDB connected successfully');
   } catch (error) {

@@ -50,15 +50,24 @@ app.use('/images',express.static(path.join(__dirname,'uploads/images')))
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(session({
+// Session configuration - production ready
+const sessionConfig = {
     secret: process.env.SESSION_SECRET,
     resave: false,
-    saveUninitialized: true,
+    saveUninitialized: false, // Changed to false for production
     cookie: { 
-        secure: false, //set true in production
-        sameSite:'strict'
+        secure: process.env.NODE_ENV === 'production', // true in production
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict', // 'none' for cross-origin in production
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
-}));
+};
+
+// Use MemoryStore for development, but warn about production
+if (process.env.NODE_ENV === 'production') {
+    console.warn('⚠️  WARNING: Using MemoryStore in production. Consider using Redis or MongoDB session store for scalability.');
+}
+
+app.use(session(sessionConfig));
 app.use('/api/user', userRoutes);
 app.use('/api/category', categoriesRoutes);
 app.use('/api/products', productsRoutes);
