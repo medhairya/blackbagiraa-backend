@@ -43,8 +43,8 @@ module.exports.saveCart = async (req, res) => {
     }
 }
 
-module.exports.fetchCart = async (req, res) => {
-    try {
+
+try {
         const userId = req.user._id;
         const cartData = await Cart.findOne({ userId });
         res.status(200).json({ success: true, cartData });
