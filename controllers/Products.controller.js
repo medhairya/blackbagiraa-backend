@@ -24,17 +24,40 @@ module.exports.fetchProducts = async (req, res) => {
 module.exports.saveCart = async (req, res) => {
     try {
         const { cart } = req.body;
-        console.log(cart);
         if (!cart) {
             return res.status(400).json({ success: false, message: "Cart is required" });
         }
         const userId = req.user._id;
-        const hashMap = new Map(Object.entries(cart));
+        
+        // Extract only productId and quantity from cart items
+        const cartItems = new Map();
+        for (const [productId, item] of Object.entries(cart)) {
+            // Handle both old format (full product) and new format (just productId and quantity)
+            const itemProductId = item.productId || item._id || productId;
+            const quantity = item.quantity || 1;
+            
+            cartItems.set(productId, {
+                productId: itemProductId,
+                quantity: quantity
+            });
+        }
+        
         let cartData = await Cart.findOne({ userId });
         if (!cartData) {
-            cartData = new Cart({ userId, items: hashMap });
+            cartData = new Cart({ userId, items: cartItems });
         } else {
-            cartData.items = new Map([...cartData.items, ...hashMap]);
+            // Merge with existing cart items
+            for (const [key, value] of cartItems.entries()) {
+                if (cartData.items.has(key)) {
+                    // Update quantity if item exists
+                    const existingItem = cartData.items.get(key);
+                    existingItem.quantity = value.quantity;
+                    cartData.items.set(key, existingItem);
+                } else {
+                    // Add new item
+                    cartData.items.set(key, value);
+                }
+            }
         }
         await cartData.save();
         res.status(200).json({ success: true, message: "Cart Updated successfully" });
@@ -48,8 +71,35 @@ module.exports.fetchCart = async (req, res) => {
     try {
         const userId = req.user._id;
         const cartData = await Cart.findOne({ userId });
-        res.status(200).json({ success: true, cartData });
+        
+        if (!cartData || !cartData.items || cartData.items.size === 0) {
+            return res.status(200).json({ success: true, cartData: null, items: {} });
+        }
+        
+        // Populate products for each cart item
+        const populatedItems = {};
+        for (const [key, cartItem] of cartData.items.entries()) {
+            const product = await Product.findById(cartItem.productId);
+            if (product) {
+                populatedItems[key] = {
+                    ...product.toObject(),
+                    quantity: cartItem.quantity
+                };
+            }
+        }
+        
+        res.status(200).json({ 
+            success: true, 
+            cartData: {
+                _id: cartData._id,
+                userId: cartData.userId,
+                createdAt: cartData.createdAt,
+                updatedAt: cartData.updatedAt
+            },
+            items: populatedItems 
+        });
     } catch (error) {
+        console.log(error);
         res.status(500).json({ success: false, message: "Internal server error" });
     }
 }

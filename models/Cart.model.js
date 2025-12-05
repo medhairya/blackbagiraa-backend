@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const { type } = require('os');
 
 const cartSchema = new mongoose.Schema({
     userId: {
@@ -10,15 +9,11 @@ const cartSchema = new mongoose.Schema({
     items: {
         type: Map,
         of: new mongoose.Schema({
-            _id: { type: String, required: true },
-            name: { type: String, required: true },
-            image: { type: String, required: true },
-            MRP: { type: Number, required: true },
-            retailPrice: { type: Number, required: true },
-            scheme: { type: String },
-            boxQuantity:{type:Number},
-            category: { type: String, required: true },
-            createdAt: { type: Date, default: Date.now },
+            productId: { 
+                type: mongoose.Schema.Types.ObjectId, 
+                required: true,
+                ref: 'Product'
+            },
             quantity: { type: Number, required: true },
         }),
         default: {}
@@ -38,6 +33,24 @@ cartSchema.pre('save', function (next) {
     this.markModified('items'); // Ensure Mongoose detects the change
     next();
 });
+
+// Method to populate cart items with product data
+cartSchema.methods.populateItems = async function() {
+    const Product = mongoose.model('Product');
+    const populatedItems = new Map();
+    
+    for (const [key, value] of this.items.entries()) {
+        const product = await Product.findById(value.productId);
+        if (product) {
+            populatedItems.set(key, {
+                ...product.toObject(),
+                quantity: value.quantity
+            });
+        }
+    }
+    
+    return populatedItems;
+};
 
 const Cart = mongoose.model('Cart', cartSchema);
 
