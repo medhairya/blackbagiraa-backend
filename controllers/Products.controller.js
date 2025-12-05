@@ -5,8 +5,7 @@ const User = require('../models/User.model');
 const CartOrder = require('../models/Orders.model');
 const { getIo } = require('../socket');
 const Category = require('../models/Category');
-const fs = require('fs');
-const path = require('path');
+const { bufferToBase64 } = require('../utils/uplode');
 
 module.exports.fetchProducts = async (req, res) => {
     try {
@@ -14,6 +13,8 @@ module.exports.fetchProducts = async (req, res) => {
         if (!products) {
             return res.status(404).json({ success: false, message: "No products found" });
         }
+        
+        // Images are stored as Base64 data URLs, so return them directly
         res.status(200).json({ success: true, products });
     } catch (error) {
         res.status(500).json({ success: false, message: "Internal server error" });
@@ -253,11 +254,18 @@ module.exports.adminAddProduct = async (req, res) => {
 
         console.log(name, MRP, retailPrice, scheme, category,boxQuantity);
         const productImg = req.file;
-        const imagePath = `${process.env.BASE_URL}/images/productImg/${productImg.filename}`
+        
+        if (!productImg) {
+            return res.status(400).json({ success: false, message: "Product image is required" });
+        }
+
+        // Convert image buffer to Base64 data URL
+        const imageBase64 = bufferToBase64(productImg.buffer, productImg.mimetype);
+        
         const categoryDe = await Category.findById(category);
         const newProduct = new Product({
             name: name,
-            image: imagePath,
+            image: imageBase64,
             MRP: MRP,
             retailPrice: retailPrice,
             scheme: scheme ? scheme : '',
@@ -282,12 +290,8 @@ module.exports.adminDeleteProduct = async (req, res) => {
         if (!product) {
             return res.status(404).json({ success: false, message: "Product not found" });
         }
-        const imgUrlPath = path.join(__dirname, '../uploads/', product.image.replace('http://localhost:4000/', ''));
-        if (fs.existsSync(imgUrlPath)) {
-            fs.unlink(imgUrlPath, (err) => {
-                console.log(err);
-            })
-        }
+        
+        // No need to delete files from filesystem since images are stored in MongoDB
         await Product.findByIdAndDelete(productId);
         getIo().emit('productDeleted', productId);
         res.status(200).json({ success: true, message: "Product deleted successfully",productId });
@@ -309,15 +313,9 @@ module.exports.adminUpdateProduct = async (req, res) => {
      
        const image = req.file || null;
        if(image){
-        const imgUrlPath = path.join(__dirname, '../uploads/', product.image.replace('http://localhost:4000/', ''));
-        
-        if(fs.existsSync(imgUrlPath)){
-            fs.unlink(imgUrlPath, (err)=>{
-                console.log(err);
-            })
-        }
-        const imagePath = `${process.env.BASE_URL}/images/productImg/${image.filename}`
-        product.image = imagePath;
+        // Convert image buffer to Base64 data URL
+        const imageBase64 = bufferToBase64(image.buffer, image.mimetype);
+        product.image = imageBase64;
        }
        if(req.body.name){
         product.name = req.body.name;

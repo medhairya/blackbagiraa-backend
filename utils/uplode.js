@@ -1,27 +1,9 @@
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 
+// Use memory storage to store files in memory as Buffer
+const storage = multer.memoryStorage();
 
-const storage = multer.diskStorage({
-
-   
-    destination: function(req,file,cb){
-        const uploadPath = path.join(__dirname,`../uploads/images/${file.fieldname}/`)
-        console.log(file.fieldname);
-        
-        fs.mkdirSync(uploadPath, { recursive: true })
-        cb(null,uploadPath)
-    },
-    filename: function(req,file,cb){
-        const ext = path.extname(file.originalname)
-        const baseName = path.basename(file.originalname,ext)
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9)
-        cb(null,`${baseName}-${uniqueSuffix}${ext}`)
-       
-    }
-
-})
 const fileFilter = (req,file,cb)=>{
     const allowedTypes = /jpeg|jpg|png|gif|svg|webp/
     const isValid = allowedTypes.test(path.extname(file.originalname).toLowerCase()) &&
@@ -31,7 +13,6 @@ const fileFilter = (req,file,cb)=>{
     }
     cb(null,true)
 }
-
 
 const getUploader = (fieldname)=>{
     return multer({
@@ -44,8 +25,15 @@ const getUploader = (fieldname)=>{
     }).single(fieldname)
 }
 
+// Helper function to convert buffer to Base64 data URL
+const bufferToBase64 = (buffer, mimetype) => {
+    const base64 = buffer.toString('base64');
+    return `data:${mimetype};base64,${base64}`;
+}
+
 module.exports = {
-    getUploader
+    getUploader,
+    bufferToBase64
 }
 
 

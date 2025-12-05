@@ -1,10 +1,7 @@
-const path = require("path");
 const Category = require("../models/Category");
 const { getIo } = require("../socket");
-const fs = require('fs');
 const Product = require("../models/Products.model");
-
-
+const { bufferToBase64 } = require("../utils/uplode");
 
 module.exports.getCategories = async (req, res) => {
     try {
@@ -12,6 +9,8 @@ module.exports.getCategories = async (req, res) => {
         if (!categories) {
             return res.status(404).json({ success: false, message: "No categories found" });
         }
+        
+        // Images are stored as Base64 data URLs, so return them directly
         return res.status(200).json({ success: true, categories });
     } catch (error) {
         return res.status(500).json({ success: false, message: error.message });
@@ -22,15 +21,20 @@ module.exports.getCategories = async (req, res) => {
 
 module.exports.addCategory = async (req, res) => {
     try {
-        //log the data and send response
         const data = req.body
         const image = req.file
-        const imagePath = `${process.env.BASE_URL}/images/categoryImage/${image.filename}`
+        
+        if (!image) {
+            return res.status(400).json({ success: false, message: "Image is required" });
+        }
+
+        // Convert image buffer to Base64 data URL
+        const imageBase64 = bufferToBase64(image.buffer, image.mimetype);
 
         const category = new Category({
             name: data.name,
             count: data.count,
-            image: imagePath
+            image: imageBase64
         })
         await category.save()
         getIo().emit('categoryAdded', category)
@@ -52,12 +56,8 @@ module.exports.deleteCategory = async (req, res) => {
         if (!category) {
             return res.status(404).json({ success: false, message: "Category not found" });
         }
-        const imgUrlPath = path.join(__dirname, '../uploads/', category.image.replace('http://localhost:4000/', ''));
-        if (fs.existsSync(imgUrlPath)) {
-            fs.unlink(imgUrlPath, (err) => {
-                console.log(err);
-            })
-        }
+        
+        // No need to delete files from filesystem since images are stored in MongoDB
         await Category.findByIdAndDelete(id)
         getIo().emit('categoryDeleted', id)
         return res.status(200).json({ success: true, message: "Category deleted successfully" });
@@ -78,14 +78,9 @@ module.exports.updateCategory = async (req, res) => {
         }
         const image = req.file || null
         if(image){
-            const imgUrlPath = path.join(__dirname, '../uploads/', category.image.replace('http://localhost:4000/', ''));
-            if (fs.existsSync(imgUrlPath)) {
-                fs.unlink(imgUrlPath, (err) => {
-                    console.log(err);
-                })
-            }
-            const imagePath = `${process.env.BASE_URL}/images/categoryImage/${image.filename}`
-            category.image = imagePath
+            // Convert image buffer to Base64 data URL
+            const imageBase64 = bufferToBase64(image.buffer, image.mimetype);
+            category.image = imageBase64
         }
         if(req.body.name){
 
