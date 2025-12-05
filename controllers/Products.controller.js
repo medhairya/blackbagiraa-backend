@@ -107,9 +107,24 @@ module.exports.fetchCart = async (req, res) => {
 module.exports.placeOrder = async (req, res) => {
     try {
         const { items, totalAmount, paymentMethod } = req.body;
-        // console.log(items,totalAmount,paymentMethod);
-        const itemsData = new Map(Object.entries(items));
-        // console.log(itemsData);
+        
+        // Extract productIds and quantities, then populate products from database
+        const itemsData = new Map();
+        for (const [key, item] of Object.entries(items)) {
+            const productId = item.productId || item._id || key;
+            const quantity = item.quantity || 1;
+            
+            // Fetch product from database to get full product data including Base64 image
+            const product = await Product.findById(productId);
+            if (product) {
+                itemsData.set(key, {
+                    ...product.toObject(),
+                    quantity: quantity
+                });
+            } else {
+                console.warn(`Product not found: ${productId}`);
+            }
+        }
 
         const userId = req.user._id;
         const userData = await User.findById(userId);
