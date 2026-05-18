@@ -7,6 +7,7 @@ const {
     updateSuperStockist,
     listDistributors,
     listAllDistributors,
+    getNetworkInsights,
 } = require('../controllers/AdminHierarchy.controller');
 
 const router = express.Router();
@@ -21,5 +22,6 @@ router.put('/super-stockists/:id', ...mainAdminOnly, updateSuperStockist);
 router.get('/distributors', ...mainAdminOnly, listAllDistributors);
 router.get('/distributors/by-stockist/:superStockistId', ...mainAdminOnly, listDistributors);
 router.get('/my-distributors', ...staffOnly, listDistributors);
+router.get('/network-insights', ...mainAdminOnly, getNetworkInsights);
 
 module.exports = router;
