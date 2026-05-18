@@ -1,25 +1,25 @@
-const CartOrder = require("../models/Orders.model");
+const CartOrder = require('../models/Orders.model');
 
-module.exports.placeOrder = async({
+module.exports.placeOrder = async ({
     userId,
+    superStockistId,
     items,
     totalAmount,
     paymentMethod,
-    shippingAddress
-})=>{
+    shippingAddress,
+}) => {
     try {
-        // console.log(userId,items,totalAmount,paymentMethod,shippingAddress);
-        
         const order = new CartOrder({
             userId,
+            superStockistId,
             items,
             totalAmount,
             paymentMethod,
-            shippingAddress
+            shippingAddress,
         });
         await order.save();
         return { success: true, order };
     } catch (error) {
         throw new Error('Failed to place order');
     }
-}
+};

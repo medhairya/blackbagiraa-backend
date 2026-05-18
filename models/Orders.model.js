@@ -6,6 +6,11 @@ const cartOrderSchema = new mongoose.Schema({
         required: true,
         ref: 'User'
     },
+    superStockistId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Admin',
+        index: true,
+    },
     items: {
         type: Map,
         of: new mongoose.Schema({

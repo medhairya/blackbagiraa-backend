@@ -6,6 +6,7 @@ const CartOrder = require('../models/Orders.model');
 const { getIo } = require('../socket');
 const Category = require('../models/Category');
 const { bufferToBase64 } = require('../utils/uplode');
+const { getOrderScope, getDistributorScope, assertOrderInScope } = require('../middlewares/roleHelpers');
 
 module.exports.fetchProducts = async (req, res) => {
     try {
@@ -139,7 +140,14 @@ module.exports.placeOrder = async (req, res) => {
             shopName: userData.shopName,
             customerName: userData.customerName,
         }
-        const order = await placeOrder({ userId, items: itemsData, totalAmount, paymentMethod, shippingAddress });
+        const order = await placeOrder({
+            userId,
+            superStockistId: userData.superStockistId,
+            items: itemsData,
+            totalAmount,
+            paymentMethod,
+            shippingAddress,
+        });
         if (!order) {
             return res.status(400).json({ success: false, message: "Failed to place order" });
         }
@@ -174,27 +182,30 @@ module.exports.fetchOrders = async (req, res) => {
 
 module.exports.adminFetchOrders = async (req, res) => {
     try {
-        if (!req.user.id) {
-            return res.status(401).json({ success: false, message: "Unauthorized" });
-        }
-        console.log(req.user);
-        const orders = await CartOrder.find();
-        if (!orders) {
-            return res.status(404).json({ success: false, message: "No orders found" });
-        }
-        console.log(orders)
+        const scope = getOrderScope(req);
+        const orders = await CartOrder.find(scope)
+            .populate('userId', 'shopName customerName contactNumber')
+            .populate('superStockistId', 'name stockistCode')
+            .sort({ createdAt: -1 });
+
         res.status(200).json({ success: true, orders });
     } catch (error) {
         console.log(error);
         res.status(500).json({ success: false, message: "Internal server error" });
     }
-
 }
 
 module.exports.adminUpdateOrderStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
         const { status } = req.body;
+        const existing = await CartOrder.findById(orderId);
+        if (!existing) {
+            return res.status(404).json({ success: false, message: "Order not found" });
+        }
+        if (!(await assertOrderInScope(req, existing))) {
+            return res.status(403).json({ success: false, message: "Forbidden" });
+        }
         const order = await CartOrder.findByIdAndUpdate(
             orderId,
             { status: status },
@@ -214,6 +225,13 @@ module.exports.adminUpdatePaymentStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
         const { paymentStatus } = req.body;
+        const existing = await CartOrder.findById(orderId);
+        if (!existing) {
+            return res.status(404).json({ success: false, message: "Order not found" });
+        }
+        if (!(await assertOrderInScope(req, existing))) {
+            return res.status(403).json({ success: false, message: "Forbidden" });
+        }
         const order = await CartOrder.findByIdAndUpdate(orderId, { paymentStatus: paymentStatus },
             { new: true }
         );
@@ -231,13 +249,15 @@ module.exports.adminUpdatePaymentStatus = async (req, res) => {
 }
 module.exports.adminFetchStatsData = async (req, res) => {
     try {
-        const orders = await CartOrder.find();
+        const scope = getOrderScope(req);
+        const orders = await CartOrder.find(scope);
         const totalOrders = orders.length;
         const pendingOrders = orders.filter(order => order.status === "pending").length;
         const completedOrders = orders.filter(order => order.status === "delivered").length;
         const totalSales = orders.reduce((acc, order) => acc + order.totalAmount, 0);
         const totalProducts = await Product.countDocuments();
-        const totalShopkeepers = await User.countDocuments();
+        const distributorScope = getDistributorScope(req);
+        const totalShopkeepers = await User.countDocuments(distributorScope);
         res.status(200).json({ success: true, stats: { totalOrders, pendingOrders, completedOrders, totalSales, totalProducts, totalShopkeepers } });
     } catch (error) {
         console.log(error);
@@ -246,9 +266,11 @@ module.exports.adminFetchStatsData = async (req, res) => {
 }
 module.exports.adminFetchMonthlySalesData = async (req, res) => {
     try {
+        const scope = getOrderScope(req);
         const salesData = await CartOrder.aggregate([
             {
                 $match: {
+                    ...scope,
                     status: { $ne: 'cancelled' },
                     paymentStatus: 'paid'
                 }
@@ -284,7 +306,9 @@ module.exports.adminFetchMonthlySalesData = async (req, res) => {
 
 module.exports.adminFetchOrderStatusData = async (req, res) => {
     try {
+        const scope = getOrderScope(req);
         const result = await CartOrder.aggregate([
+            { $match: scope },
             {
                 $group: {
                     _id: "$status",

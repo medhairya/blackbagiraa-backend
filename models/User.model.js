@@ -35,18 +35,29 @@ const userSchema = new mongoose.Schema({
     password: {
         type: String,
         required: true,
-        select: false, 
+        select: false,
     },
-});
-userSchema.pre('save', async function(next) {
+    superStockistId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Admin',
+        required: true,
+        index: true,
+    },
+}, { timestamps: true });
+
+userSchema.pre('save', async function (next) {
     if (this.isModified('password')) {
         this.password = await bcrypt.hash(this.password, 10);
     }
     next();
 });
 
-userSchema.methods.generateAuthToken = function() {
-    const token = jwt.sign({ _id: this._id }, process.env.JWT_SECRET, { expiresIn: '12h' });
+userSchema.methods.generateAuthToken = function () {
+    const token = jwt.sign(
+        { _id: this._id, role: 'user' },
+        process.env.JWT_SECRET,
+        { expiresIn: '12h' }
+    );
     return token;
 };
 

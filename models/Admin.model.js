@@ -6,12 +6,33 @@ const adminSchema = new mongoose.Schema({
     contactNumber: {
         type: String,
         required: true,
-        unique: true, // Optional: ensures no duplicate numbers
+        unique: true,
     },
     password: {
         type: String,
         required: true,
-        select: false, // Will exclude password by default when querying
+        select: false,
+    },
+    role: {
+        type: String,
+        enum: ['main_admin', 'super_stockist'],
+        required: true,
+        default: 'super_stockist',
+    },
+    name: {
+        type: String,
+        required: true,
+    },
+    stockistCode: {
+        type: String,
+        unique: true,
+        sparse: true,
+        uppercase: true,
+        trim: true,
+    },
+    isActive: {
+        type: Boolean,
+        default: true,
     },
     createdAt: {
         type: Date,
@@ -23,20 +44,20 @@ const adminSchema = new mongoose.Schema({
     },
 });
 
-// Pre-save hook to hash password
-adminSchema.pre('save', async function(next) {
+adminSchema.pre('save', async function (next) {
     if (this.isModified('password')) {
         this.password = await bcrypt.hash(this.password, 10);
     }
+    if (this.isModified('stockistCode') && this.stockistCode) {
+        this.stockistCode = this.stockistCode.toUpperCase().trim();
+    }
+    this.updatedAt = Date.now();
     next();
 });
 
-
-
-// Method to generate JWT token
 adminSchema.methods.generateToken = function () {
     return jwt.sign(
-        { id: this._id, contactNumber: this.contactNumber },
+        { id: this._id, contactNumber: this.contactNumber, role: this.role },
         process.env.JWT_SECRET,
         { expiresIn: '12h' }
     );

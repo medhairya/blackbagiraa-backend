@@ -1,30 +1,67 @@
 const User = require('../models/User.model');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { createUser } = require('../services/User.service');
-const Blacklist = require('../models/Blacklist.model'); // Import the Blacklist model
+const { createUser, resolveSuperStockist, normalizeStockistCode } = require('../services/User.service');
+const Blacklist = require('../models/Blacklist.model');
 const Admin = require('../models/Admin.model');
+const { getStaffId } = require('../middlewares/roleHelpers');
 
 module.exports.registerUser = async (req, res) => {
     try {
-        const { customerName, shopName, addressLine1, city, state, pincode, contactNumber, password } = req.body;
-        const user = await createUser({ customerName, shopName, addressLine1, city, state, pincode, contactNumber, password });
+        const {
+            customerName,
+            shopName,
+            addressLine1,
+            city,
+            state,
+            pincode,
+            contactNumber,
+            password,
+            superStockistCode,
+        } = req.body;
+        const user = await createUser({
+            customerName,
+            shopName,
+            addressLine1,
+            city,
+            state,
+            pincode,
+            contactNumber,
+            password,
+            superStockistCode,
+        });
         res.status(200).json({ success: true, message: 'User registered successfully', user });
     } catch (error) {
-        // Send error with appropriate status code based on the error type
-        if (error.message.includes('required')) {
-            return res.status(400).json({ success: false, message: 'Validation error', error: error.message });
-        } else if (error.message.includes('phone is invalid')) {
+        if (error.message.includes('required') || error.message.includes('stockist')) {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+        if (error.message.includes('phone is invalid')) {
             return res.status(409).json({ success: false, message: 'Invalid User', error: error.message });
         }
         res.status(500).json({ success: false, message: 'User registration failed', error: error.message });
     }
 };
 
+module.exports.validateStockistCode = async (req, res) => {
+    try {
+        const { code } = req.query;
+        if (!code) {
+            return res.status(400).json({ success: false, message: 'Code is required' });
+        }
+        const superStockist = await resolveSuperStockist(code);
+        res.status(200).json({
+            success: true,
+            name: superStockist.name,
+            stockistCode: superStockist.stockistCode,
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
 module.exports.loginUser = async (req, res) => {
     try {
         const { contactNumber, password, role } = req.body;
-        if(role !== 'admin' && role !== 'user'){
+        if (role !== 'admin' && role !== 'user') {
             return res.status(400).json({ success: false, message: 'Invalid role' });
         }
 
@@ -34,6 +71,9 @@ module.exports.loginUser = async (req, res) => {
             if (!admin) {
                 return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
             }
+            if (!admin.isActive) {
+                return res.status(403).json({ success: false, message: 'Account is deactivated' });
+            }
             const isMatch = await bcrypt.compare(password, admin.password);
             if (!isMatch) {
                 return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
@@ -41,9 +81,13 @@ module.exports.loginUser = async (req, res) => {
             const token = admin.generateToken();
             res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
             return res.status(200).json({
-                success: true, message: 'Login successful', token: token,role:role
+                success: true,
+                message: 'Login successful',
+                token,
+                role: admin.role,
             });
         }
+
         if (role === 'user') {
             const user = await User.findOne({ contactNumber }).select('+password');
             if (!user) {
@@ -56,22 +100,22 @@ module.exports.loginUser = async (req, res) => {
             const token = user.generateAuthToken();
             res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
             return res.status(200).json({
-                success: true, message: 'Login successful', token: token,role:role
+                success: true,
+                message: 'Login successful',
+                token,
+                role: 'user',
             });
         }
-
-
     } catch (error) {
         res.status(500).json({ success: false, message: 'Login failed', error: error.message });
     }
-}
+};
 
-module.exports.logoutUser = async (req, res, next) => {
-    const token = req.cookies.token || req.headers.authorization.split(' ')[1];  // Get the token from the cookie
+module.exports.logoutUser = async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const token = req.cookies.token || (authHeader && authHeader.split(' ')[1]);
     try {
-
         if (token) {
-            // Add the token to the blacklist
             await Blacklist.create({ token, reason: 'User logged out' });
         }
         res.clearCookie('token');
@@ -79,26 +123,45 @@ module.exports.logoutUser = async (req, res, next) => {
     } catch (error) {
         res.status(500).json({ success: false, message: 'Logout failed', error: error.message });
     }
-}
+};
 
 module.exports.authUser = async (req, res) => {
     try {
-        const user = req.user;
-        const userData = await User.findById(user._id);
-        res.status(200).json({ success: true, message: 'Authentication successful', user: userData });
+        const role = req.user?.role;
+
+        if (role === 'main_admin' || role === 'super_stockist') {
+            const staffId = getStaffId(req);
+            const admin = await Admin.findById(staffId).select('-password');
+            return res.status(200).json({
+                success: true,
+                message: 'Authentication successful',
+                user: admin,
+                role,
+            });
+        }
+
+        const userData = await User.findById(req.user._id).populate('superStockistId', 'name stockistCode');
+        res.status(200).json({
+            success: true,
+            message: 'Authentication successful',
+            user: userData,
+            role: 'user',
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Authentication failed', error: error.message });
     }
-}
+};
 
 module.exports.updateProfile = async (req, res) => {
     try {
         const { customerName, shopName, addressLine1, city, state, pincode, contactNumber } = req.body;
-        const user = req.user;
-        const updatedUser = await User.findByIdAndUpdate(user._id, { customerName, shopName, addressLine1, city, state, pincode, contactNumber }, { new: true });
+        const updatedUser = await User.findByIdAndUpdate(
+            req.user._id,
+            { customerName, shopName, addressLine1, city, state, pincode, contactNumber },
+            { new: true }
+        );
         res.status(200).json({ success: true, message: 'Profile updated successfully', user: updatedUser });
-
     } catch (error) {
         res.status(500).json({ success: false, message: 'Update profile failed', error: error.message });
     }
-}
+};

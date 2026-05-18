@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const categoriesRoutes = require('./routes/Categories.routes');
 const productsRoutes = require('./routes/Products.routes');
+const adminHierarchyRoutes = require('./routes/AdminHierarchy.routes');
 const path = require('path');
 require('dotenv').config();
 
@@ -71,6 +72,7 @@ app.use(session(sessionConfig));
 app.use('/api/user', userRoutes);
 app.use('/api/category', categoriesRoutes);
 app.use('/api/products', productsRoutes);
+app.use('/api/admin', adminHierarchyRoutes);
 
 app.get('/', (req, res) => {
     res.json({ 
