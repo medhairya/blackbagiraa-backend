@@ -7,6 +7,7 @@ const session = require('express-session');
 const categoriesRoutes = require('./routes/Categories.routes');
 const productsRoutes = require('./routes/Products.routes');
 const adminHierarchyRoutes = require('./routes/AdminHierarchy.routes');
+const hierarchyRoutes = require('./routes/Hierarchy.routes');
 const path = require('path');
 require('dotenv').config();
 
@@ -73,6 +74,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/category', categoriesRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/api/admin', adminHierarchyRoutes);
+app.use('/api/hierarchy', hierarchyRoutes);
 
 app.get('/', (req, res) => {
     res.json({ 

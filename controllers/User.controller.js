@@ -61,6 +61,41 @@ module.exports.validateStockistCode = async (req, res) => {
 module.exports.loginUser = async (req, res) => {
     try {
         const { contactNumber, password, role } = req.body;
+
+        // ── Try HierarchyMember first (new system) ──────────────────────────
+        const HierarchyMember = require('../models/HierarchyMember.model');
+        const hierarchyMember = await HierarchyMember.findOne({ contactNumber }).select('+password');
+
+        if (hierarchyMember) {
+            if (!hierarchyMember.isActive) {
+                return res.status(403).json({ success: false, message: 'Account is deactivated' });
+            }
+            const isMatch = await hierarchyMember.comparePassword(password);
+            if (!isMatch) {
+                return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
+            }
+            const token = hierarchyMember.generateToken();
+            res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+            return res.status(200).json({
+                success: true,
+                message: 'Login successful',
+                token,
+                role: hierarchyMember.roleName,
+                level: hierarchyMember.level,
+                member: {
+                    _id: hierarchyMember._id,
+                    name: hierarchyMember.name,
+                    contactNumber: hierarchyMember.contactNumber,
+                    level: hierarchyMember.level,
+                    roleName: hierarchyMember.roleName,
+                    shopName: hierarchyMember.shopName,
+                    inviteCode: hierarchyMember.inviteCode,
+                    isActive: hierarchyMember.isActive,
+                },
+            });
+        }
+
+        // ── Fallback: legacy Admin/User login ───────────────────────────────
         if (role !== 'admin' && role !== 'user') {
             return res.status(400).json({ success: false, message: 'Invalid role' });
         }
@@ -80,11 +115,15 @@ module.exports.loginUser = async (req, res) => {
             }
             const token = admin.generateToken();
             res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+
+            // Map legacy role to level
+            const level = admin.role === 'main_admin' ? 7 : 5;
             return res.status(200).json({
                 success: true,
                 message: 'Login successful',
                 token,
                 role: admin.role,
+                level,
             });
         }
 
@@ -104,6 +143,7 @@ module.exports.loginUser = async (req, res) => {
                 message: 'Login successful',
                 token,
                 role: 'user',
+                level: 1, // Retailers
             });
         }
     } catch (error) {
