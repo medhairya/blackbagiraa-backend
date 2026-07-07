@@ -57,6 +57,231 @@ function getPeriodBounds(duration) {
     return { start, end };
 }
 
+// ─── Level→RoleName mapping ────────────────────────────────────────────────────
+const LEVEL_TO_ROLE = {
+    7: 'director',
+    6: 'manager',
+    5: 'distributor_ss',
+    4: 'sub_ss',
+    3: 'distributor',
+    2: 'wholesaler',
+    1: 'retailer',
+};
+
+// ─── Member Registration & Management ─────────────────────────────────────────
+
+/**
+ * Director (7) directly creates a Manager (6) or SS/Distributor (5).
+ * Auth required — only level 7 can call this.
+ */
+module.exports.addMemberByDirector = async (req, res) => {
+    try {
+        const callerLevel = req.user.level ?? 0;
+        if (callerLevel < 7) {
+            return res.status(403).json({ success: false, message: 'Only Directors can add members directly.' });
+        }
+
+        const { name, contactNumber, password, targetLevel, shopName, address } = req.body;
+        if (!name || !contactNumber || !password || !targetLevel) {
+            return res.status(400).json({ success: false, message: 'name, contactNumber, password, and targetLevel are required.' });
+        }
+        if (![5, 6].includes(Number(targetLevel))) {
+            return res.status(400).json({ success: false, message: 'Directors can only add level 5 (SS/Distributor) or level 6 (Manager).' });
+        }
+
+        const existing = await HierarchyMember.findOne({ contactNumber });
+        if (existing) {
+            return res.status(409).json({ success: false, message: 'A member with this contact number already exists.' });
+        }
+
+        const directorId = req.user.id || req.user._id;
+        const director = await HierarchyMember.findById(directorId);
+        const parentAncestors = director ? [...(director.ancestorIds ?? []), director._id] : [];
+
+        const member = new HierarchyMember({
+            name: name.trim(),
+            contactNumber: contactNumber.trim(),
+            password, // will be hashed by pre-save hook
+            level: Number(targetLevel),
+            roleName: LEVEL_TO_ROLE[Number(targetLevel)],
+            parentId: directorId,
+            ancestorIds: parentAncestors,
+            shopName: shopName?.trim() || '',
+            address: address || {},
+            isActive: true,
+        });
+
+        await member.save();
+
+        res.status(201).json({
+            success: true,
+            message: `${LEVEL_TO_ROLE[Number(targetLevel)]} added successfully.`,
+            member: {
+                _id: member._id,
+                name: member.name,
+                contactNumber: member.contactNumber,
+                level: member.level,
+                roleName: member.roleName,
+                inviteCode: member.inviteCode,
+            },
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Public — no auth needed. Look up parent info from an invite code.
+ * Returns the parent's name, level, and what level the new registrant will be.
+ */
+module.exports.lookupInvite = async (req, res) => {
+    try {
+        const { code } = req.query;
+        if (!code) {
+            return res.status(400).json({ success: false, message: 'Invite code is required.' });
+        }
+
+        const parent = await HierarchyMember.findOne({ inviteCode: code.toUpperCase().trim() }).lean();
+        if (!parent) {
+            return res.status(404).json({ success: false, message: 'Invalid invite code. Please check and try again.' });
+        }
+        if (!parent.isActive) {
+            return res.status(403).json({ success: false, message: 'This invite code belongs to a deactivated account.' });
+        }
+
+        const newLevel = parent.level - 1;
+        if (newLevel < 1) {
+            return res.status(400).json({ success: false, message: 'This member cannot invite new members below their level.' });
+        }
+
+        res.json({
+            success: true,
+            parentName: parent.name,
+            parentLevel: parent.level,
+            parentRoleName: parent.roleName,
+            newMemberLevel: newLevel,
+            newMemberRoleName: LEVEL_TO_ROLE[newLevel],
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Public — no auth needed. Register a new HierarchyMember using an invite code.
+ * Level is automatically set to parent_level - 1.
+ * Level-1 members do NOT receive an inviteCode.
+ */
+module.exports.registerWithInvite = async (req, res) => {
+    try {
+        const { name, contactNumber, password, inviteCode, shopName, address } = req.body;
+        if (!name || !contactNumber || !password || !inviteCode) {
+            return res.status(400).json({ success: false, message: 'name, contactNumber, password, and inviteCode are required.' });
+        }
+
+        const parent = await HierarchyMember.findOne({ inviteCode: inviteCode.toUpperCase().trim() });
+        if (!parent) {
+            return res.status(404).json({ success: false, message: 'Invalid invite code. Please check and try again.' });
+        }
+        if (!parent.isActive) {
+            return res.status(403).json({ success: false, message: 'This invite code belongs to a deactivated account.' });
+        }
+
+        const newLevel = parent.level - 1;
+        if (newLevel < 1) {
+            return res.status(400).json({ success: false, message: 'Cannot register below level 1.' });
+        }
+
+        const existing = await HierarchyMember.findOne({ contactNumber: contactNumber.trim() });
+        if (existing) {
+            return res.status(409).json({ success: false, message: 'An account with this contact number already exists.' });
+        }
+
+        const ancestorIds = [...(parent.ancestorIds ?? []), parent._id];
+
+        const member = new HierarchyMember({
+            name: name.trim(),
+            contactNumber: contactNumber.trim(),
+            password,
+            level: newLevel,
+            roleName: LEVEL_TO_ROLE[newLevel],
+            parentId: parent._id,
+            ancestorIds,
+            shopName: shopName?.trim() || '',
+            address: address || {},
+            isActive: true,
+            // inviteCode is auto-generated by pre-save hook for level >= 2
+            // For level 1, no inviteCode will be set
+        });
+
+        await member.save();
+
+        res.status(201).json({
+            success: true,
+            message: 'Account created successfully! You can now log in.',
+            level: newLevel,
+            roleName: LEVEL_TO_ROLE[newLevel],
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Change the level of a direct subordinate. Available to levels 3–6.
+ * A caller at level N can set a subordinate's level to any value from 1 to N-1.
+ */
+module.exports.changeMemberLevel = async (req, res) => {
+    try {
+        const callerLevel = req.user.level ?? 1;
+        const callerId = req.user.id || req.user._id;
+
+        if (callerLevel < 3 || callerLevel > 6) {
+            return res.status(403).json({ success: false, message: 'Level change is only available to members at levels 3–6.' });
+        }
+
+        const { memberId } = req.params;
+        const { newLevel } = req.body;
+
+        if (!newLevel || Number(newLevel) < 1 || Number(newLevel) >= callerLevel) {
+            return res.status(400).json({
+                success: false,
+                message: `New level must be between 1 and ${callerLevel - 1}.`,
+            });
+        }
+
+        // Target must be a descendant in the caller's subtree
+        const target = await HierarchyMember.findById(memberId);
+        if (!target) {
+            return res.status(404).json({ success: false, message: 'Member not found.' });
+        }
+
+        const isSubordinate = target.ancestorIds?.some((id) => id.toString() === callerId.toString());
+        if (!isSubordinate && target.parentId?.toString() !== callerId.toString()) {
+            return res.status(403).json({ success: false, message: 'You can only change the level of your direct subordinates.' });
+        }
+
+        const targetLevel = Number(newLevel);
+        target.level = targetLevel;
+        target.roleName = LEVEL_TO_ROLE[targetLevel];
+
+        // For level 1 — remove invite code (leaf node)
+        if (targetLevel === 1) {
+            target.inviteCode = undefined;
+        }
+
+        await target.save();
+
+        res.json({
+            success: true,
+            message: `${target.name}'s level changed to ${LEVEL_TO_ROLE[targetLevel]} (Level ${targetLevel}).`,
+            member: { _id: target._id, level: target.level, roleName: target.roleName, inviteCode: target.inviteCode },
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // ─── Dashboard Stats ───────────────────────────────────────────────────────────
 
 module.exports.getDashboardStats = async (req, res) => {

@@ -86,10 +86,29 @@ hierarchyMemberSchema.index({ ancestorIds: 1 });
 hierarchyMemberSchema.index({ parentId: 1, level: 1 });
 hierarchyMemberSchema.index({ roleName: 1 });
 
+// ─── Helpers ────────────────────────────────────────────────────────────────────
+function generateInviteCode(name, contact) {
+    const namePart = name.replace(/\s+/g, '').toUpperCase().slice(0, 5);
+    const contactPart = contact.slice(-4);
+    const rand = Math.random().toString(36).substring(2, 5).toUpperCase();
+    return `${namePart}-${contactPart}-${rand}`;
+}
+
 // ─── Hooks ─────────────────────────────────────────────────────────────────────
 hierarchyMemberSchema.pre('save', async function (next) {
     if (this.isModified('password')) {
         this.password = await bcrypt.hash(this.password, 10);
+    }
+    // Auto-generate invite code for levels 2+ that don't have one yet
+    if (this.isNew && this.level >= 2 && !this.inviteCode) {
+        let code, exists;
+        let attempts = 0;
+        do {
+            code = generateInviteCode(this.name, this.contactNumber);
+            exists = await mongoose.model('HierarchyMember').exists({ inviteCode: code });
+            attempts++;
+        } while (exists && attempts < 10);
+        this.inviteCode = code;
     }
     next();
 });

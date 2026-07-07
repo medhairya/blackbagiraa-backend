@@ -17,11 +17,19 @@ const {
     getCustomerDetail,
     getReports,
     updateProfile,
+    addMemberByDirector,
+    lookupInvite,
+    registerWithInvite,
+    changeMemberLevel,
 } = require('../controllers/Hierarchy.controller');
 
 const router = express.Router();
 
-// All routes require authentication
+// ── Public routes (no auth required) ──────────────────────────────────────────
+router.get('/lookup-invite', lookupInvite);          // Preview invite code info
+router.post('/register', registerWithInvite);        // Self-registration with invite code
+
+// All routes below require authentication
 router.use(authMiddleware);
 
 // Dashboard
@@ -30,6 +38,8 @@ router.get('/dashboard-stats', getDashboardStats);
 // Team management
 router.get('/my-team', getMyTeam);
 router.get('/members/:memberId', getMemberDetail);
+router.post('/members', addMemberByDirector);                   // Director: add Manager or SS
+router.patch('/members/:memberId/level', changeMemberLevel);    // Change subordinate level (levels 3-6)
 
 // Orders (scoped by hierarchy)
 router.get('/team-orders', getTeamOrders);
