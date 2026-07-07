@@ -16,19 +16,20 @@ const {
     adminUpdateProduct,
 } = require('../controllers/Products.controller');
 const authMiddleware = require('../middlewares/authMiddleware');
-const { requireRole } = require('../middlewares/roleHelpers');
+const { requireRole, requireMaxLevel } = require('../middlewares/roleHelpers');
 
 const { getUploader } = require('../utils/uplode');
 const uploder = getUploader('productImg');
 
 const staffOnly = [authMiddleware, requireRole('main_admin', 'super_stockist')];
-const userOnly = [authMiddleware, requireRole('user')];
+// Ordering routes are open to levels 1-5 (all sales members who can purchase)
+const orderingAccess = [authMiddleware, requireMaxLevel(5)];
 
 router.get('/fetchProducts', authMiddleware, fetchProducts);
-router.post('/saveCart', ...userOnly, saveCart);
-router.get('/fetchCart', ...userOnly, fetchCart);
-router.post('/placeOrder', ...userOnly, placeOrder);
-router.get('/fetchOrders', ...userOnly, fetchOrders);
+router.post('/saveCart', ...orderingAccess, saveCart);
+router.get('/fetchCart', ...orderingAccess, fetchCart);
+router.post('/placeOrder', ...orderingAccess, placeOrder);
+router.get('/fetchOrders', ...orderingAccess, fetchOrders);
 
 router.get('/admin/fetchOrders', ...staffOnly, adminFetchOrders);
 router.put('/admin/updateOrderStatus/:orderId', ...staffOnly, adminUpdateOrderStatus);

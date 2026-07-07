@@ -62,6 +62,26 @@ function requireRole(...roles) {
     };
 }
 
+/**
+ * Allow any authenticated HierarchyMember whose level is <= maxLevel.
+ * Also accepts legacy 'user' role tokens (Level 1 retailers) for backward compat.
+ * Use this on ordering/cart/product routes that should be open to levels 1-5.
+ */
+function requireMaxLevel(maxLevel) {
+    return (req, res, next) => {
+        // Legacy 'user' role = Level 1 retailer — always allow for ordering
+        if (req.user?.role === 'user') return next();
+
+        const level = req.user?.level;
+        if (level !== undefined && level <= maxLevel) return next();
+
+        return res.status(403).json({
+            success: false,
+            message: `Forbidden: only members at level ${maxLevel} or below can access this.`,
+        });
+    };
+}
+
 async function assertOrderInScope(req, order) {
     if (!order) {
         return false;
@@ -91,5 +111,6 @@ module.exports = {
     getOrderScope,
     getDistributorScope,
     requireRole,
+    requireMaxLevel,
     assertOrderInScope,
 };

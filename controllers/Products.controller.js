@@ -14,8 +14,32 @@ module.exports.fetchProducts = async (req, res) => {
         if (!products) {
             return res.status(404).json({ success: false, message: "No products found" });
         }
-        
-        // Images are stored as Base64 data URLs, so return them directly
+
+        // ── Level-specific pricing overlay ────────────────────────────────
+        // If the user is a HierarchyMember, override retailPrice with their level's price
+        const userLevel = req.user?.level;
+        if (userLevel && userLevel >= 1 && userLevel <= 5) {
+            try {
+                const ProductPricing = require('../models/ProductPricing.model');
+                const levelPricing = await ProductPricing.find({ level: userLevel }).lean();
+                const pricingMap = {};
+                for (const p of levelPricing) {
+                    pricingMap[p.productId.toString()] = p.retailPrice;
+                }
+                const productsWithPrice = products.map((product) => {
+                    const obj = product.toObject();
+                    const levelPrice = pricingMap[obj._id.toString()];
+                    if (levelPrice !== undefined) {
+                        obj.retailPrice = levelPrice;
+                    }
+                    return obj;
+                });
+                return res.status(200).json({ success: true, products: productsWithPrice });
+            } catch (pricingErr) {
+                console.warn('Could not load level pricing, returning base prices:', pricingErr.message);
+            }
+        }
+
         res.status(200).json({ success: true, products });
     } catch (error) {
         res.status(500).json({ success: false, message: "Internal server error" });
@@ -108,61 +132,78 @@ module.exports.fetchCart = async (req, res) => {
 module.exports.placeOrder = async (req, res) => {
     try {
         const { items, totalAmount, paymentMethod } = req.body;
-        
-        // Extract productIds and quantities, then populate products from database
+
+        // Build itemsData map from request
         const itemsData = new Map();
         for (const [key, item] of Object.entries(items)) {
             const productId = item.productId || item._id || key;
             const quantity = item.quantity || 1;
-            
-            // Fetch product from database to get full product data including Base64 image
             const product = await Product.findById(productId);
             if (product) {
-                itemsData.set(key, {
-                    ...product.toObject(),
-                    quantity: quantity
-                });
+                itemsData.set(key, { ...product.toObject(), quantity });
             } else {
                 console.warn(`Product not found: ${productId}`);
             }
         }
 
-        const userId = req.user._id;
-        const userData = await User.findById(userId);
-        if (!userData) {
-            return res.status(404).json({ success: false, message: "User not found" });
+        // ── Resolve user identity: support both HierarchyMember (levels 1-5) and legacy User ──
+        const HierarchyMember = require('../models/HierarchyMember.model');
+        const rawId = req.user.id || req.user._id;
+        let userId, shippingAddress, superStockistId;
+
+        // Try HierarchyMember first (new system)
+        const hierarchyUser = await HierarchyMember.findById(rawId);
+        if (hierarchyUser) {
+            userId = hierarchyUser._id;
+            shippingAddress = {
+                addressLine1: hierarchyUser.address?.line1 || '',
+                city: hierarchyUser.address?.city || '',
+                state: hierarchyUser.address?.state || '',
+                pincode: hierarchyUser.address?.pincode || '',
+                shopName: hierarchyUser.shopName || '',
+                customerName: hierarchyUser.name || '',
+            };
+            superStockistId = hierarchyUser.parentId || null;
+        } else {
+            // Fallback to legacy User model
+            const userData = await User.findById(rawId);
+            if (!userData) {
+                return res.status(404).json({ success: false, message: 'User not found' });
+            }
+            userId = userData._id;
+            shippingAddress = {
+                addressLine1: userData.addressLine1,
+                city: userData.city,
+                state: userData.state,
+                pincode: userData.pincode,
+                shopName: userData.shopName,
+                customerName: userData.customerName,
+            };
+            superStockistId = userData.superStockistId;
         }
-        const shippingAddress = {
-            addressLine1: userData.addressLine1,
-            city: userData.city,
-            state: userData.state,
-            pincode: userData.pincode,
-            shopName: userData.shopName,
-            customerName: userData.customerName,
-        }
+
         const order = await placeOrder({
             userId,
-            superStockistId: userData.superStockistId,
+            superStockistId,
             items: itemsData,
             totalAmount,
             paymentMethod,
             shippingAddress,
         });
+
         if (!order) {
-            return res.status(400).json({ success: false, message: "Failed to place order" });
+            return res.status(400).json({ success: false, message: 'Failed to place order' });
         }
         if (order.success) {
             await Cart.deleteMany({ userId });
             setTimeout(() => {
-
-                getIo().emit('orderPlaced', { success: true, message: "Order placed successfully", order });
+                getIo().emit('orderPlaced', { success: true, message: 'Order placed successfully', order });
             }, 2000);
         }
         res.status(200).json({ success: true, order });
     } catch (error) {
         console.log(error);
-
-        res.status(500).json({ success: false, message: "Internal server error" });
+        res.status(500).json({ success: false, message: 'Internal server error' });
     }
 }
 
