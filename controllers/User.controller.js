@@ -95,17 +95,9 @@ module.exports.loginUser = async (req, res) => {
             });
         }
 
-        // ── Fallback: legacy Admin/User login ───────────────────────────────
-        if (role !== 'admin' && role !== 'user') {
-            return res.status(400).json({ success: false, message: 'Invalid role' });
-        }
-
-        if (role === 'admin') {
-            const admin = await Admin.findOne({ contactNumber }).select('+password');
-
-            if (!admin) {
-                return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
-            }
+        // ── Fallback: legacy Admin/User login (check both collections dynamically) ───
+        const admin = await Admin.findOne({ contactNumber }).select('+password');
+        if (admin) {
             if (!admin.isActive) {
                 return res.status(403).json({ success: false, message: 'Account is deactivated' });
             }
@@ -127,11 +119,8 @@ module.exports.loginUser = async (req, res) => {
             });
         }
 
-        if (role === 'user') {
-            const user = await User.findOne({ contactNumber }).select('+password');
-            if (!user) {
-                return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
-            }
+        const user = await User.findOne({ contactNumber }).select('+password');
+        if (user) {
             const isMatch = await bcrypt.compare(password, user.password);
             if (!isMatch) {
                 return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
@@ -146,6 +135,9 @@ module.exports.loginUser = async (req, res) => {
                 level: 1, // Retailers
             });
         }
+
+        // If none matched
+        return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Login failed', error: error.message });
     }
