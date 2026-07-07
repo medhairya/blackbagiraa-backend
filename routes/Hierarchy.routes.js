@@ -8,6 +8,8 @@ const {
     getTargets,
     createTarget,
     getPricing,
+    setPrice,
+    createPriceRequest,
     getPriceRequests,
     updatePriceRequest,
     getCustomers,
@@ -38,6 +40,8 @@ router.post('/targets', createTarget);
 
 // Pricing (Directors + Managers)
 router.get('/pricing', getPricing);
+router.post('/pricing', setPrice);                              // Director: set price directly
+router.post('/pricing/requests', createPriceRequest);          // Manager: submit price request
 router.get('/pricing/requests', getPriceRequests);
 router.put('/pricing/requests/:requestId', updatePriceRequest);
 

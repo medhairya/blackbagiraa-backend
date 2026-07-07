@@ -309,6 +309,72 @@ module.exports.getPricing = async (req, res) => {
     }
 };
 
+/** Director directly sets a price for a product at a specific level */
+module.exports.setPrice = async (req, res) => {
+    try {
+        const memberLevel = req.user.level ?? 1;
+        if (memberLevel < 7) {
+            return res.status(403).json({ success: false, message: 'Only Directors can set prices directly.' });
+        }
+
+        const { productId, level, retailPrice } = req.body;
+        if (!productId || !level || retailPrice === undefined) {
+            return res.status(400).json({ success: false, message: 'productId, level, and retailPrice are required.' });
+        }
+        if (level < 1 || level > 5) {
+            return res.status(400).json({ success: false, message: 'Level must be between 1 and 5.' });
+        }
+        if (retailPrice < 0) {
+            return res.status(400).json({ success: false, message: 'Price cannot be negative.' });
+        }
+
+        const directorId = req.user.id || req.user._id;
+        const result = await ProductPricing.findOneAndUpdate(
+            { productId, level },
+            { retailPrice, setBy: directorId },
+            { upsert: true, new: true }
+        );
+
+        res.json({ success: true, message: `Price for level ${level} updated.`, pricing: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/** Manager submits a price change request to the Director */
+module.exports.createPriceRequest = async (req, res) => {
+    try {
+        const memberLevel = req.user.level ?? 1;
+        if (memberLevel < 6) {
+            return res.status(403).json({ success: false, message: 'Only Managers can submit price change requests.' });
+        }
+
+        const { productId, targetLevel, requestedPrice, reason } = req.body;
+        if (!productId || !targetLevel || requestedPrice === undefined) {
+            return res.status(400).json({ success: false, message: 'productId, targetLevel, and requestedPrice are required.' });
+        }
+
+        const existing = await ProductPricing.findOne({ productId, level: targetLevel }).lean();
+        const currentPrice = existing?.retailPrice ?? 0;
+        const requestedBy = req.user.id || req.user._id;
+
+        const priceRequest = await PriceChangeRequest.create({
+            requestedBy,
+            productId,
+            currentPrice,
+            requestedPrice,
+            targetLevel,
+            reason: reason || '',
+            status: 'pending',
+        });
+
+        res.status(201).json({ success: true, message: 'Price change request submitted.', request: priceRequest });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+
 module.exports.getPriceRequests = async (req, res) => {
     try {
         const memberId = req.user.id || req.user._id;
