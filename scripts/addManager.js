@@ -52,21 +52,24 @@ async function run() {
 
         const hashedPassword = await bcrypt.hash(MANAGER_CONFIG.password, 10);
 
-        const manager = new HierarchyMember({
+        const managerDoc = {
             name: MANAGER_CONFIG.name,
             contactNumber: MANAGER_CONFIG.contactNumber,
             password: hashedPassword,
-            level: 6, // Manager Level
+            level: 6,
             roleName: "manager",
             parentId: director ? director._id : null,
             ancestorIds: director ? [director._id] : [],
             inviteCode: MANAGER_CONFIG.inviteCode.toUpperCase(),
             isActive: true,
-            address: MANAGER_CONFIG.address
-        });
+            address: MANAGER_CONFIG.address,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
 
-        manager.$__skipPasswordHash = true; // Skip double hashing since we hashed it above
-        await manager.save();
+        // Use direct insert to bypass the pre-save hash hook (password is already hashed)
+        await HierarchyMember.collection.insertOne(managerDoc);
+        const manager = managerDoc;
         console.log(`\n🎉 Manager successfully added!`);
         console.log(`- Name: ${manager.name}`);
         console.log(`- Login Contact: ${manager.contactNumber}`);
