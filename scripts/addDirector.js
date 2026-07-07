@@ -13,8 +13,8 @@ const HierarchyMember = require('../models/HierarchyMember.model');
 const DIRECTOR_CONFIG = {
     name: "Black Bagiraa Director",
     contactNumber: "9662447873",          // Mobile number used for login
-    password: "Admin@123",               // Password (will be hashed automatically)
-    inviteCode: "DIR-BAGIRAA",           // Invite code (share with Managers to link under you)
+    password: "dhairya4252",               // Password (will be hashed automatically)
+    inviteCode: "ITHelp",           // Invite code (share with Managers to link under you)
     shopName: "Black Bagiraa HQ",
     address: {
         line1: "Black Bagiraa Factory",
