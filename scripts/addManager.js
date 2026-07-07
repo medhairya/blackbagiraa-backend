@@ -16,7 +16,7 @@ const MANAGER_CONFIG = {
     password: "keyur@1999",            // Password in plain text (will be hashed automatically)
     inviteCode: "MGR-KEYUR",                  // Unique code for subordinates to register under them
     address: {
-        line1: "123 Office Road",
+        line1: "Black Bagiraa Factory",
         city: "Vadodara",
         state: "Gujarat",
         pincode: "390001"
