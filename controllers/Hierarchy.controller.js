@@ -594,16 +594,10 @@ module.exports.searchMembers = async (req, res) => {
                 { name: regex },
                 { contactNumber: regex },
                 { inviteCode: regex }
-            ]
+            ],
+            // Both Managers (6) and Directors (7) can search everyone registered except level 7 Directors
+            level: { $ne: 7 }
         };
-
-        // If caller is Manager (6), restrict to direct/indirect subordinates in their subtree
-        if (callerLevel === 6) {
-            filter.ancestorIds = callerId;
-        } else {
-            // Directors (7) can search any level below them (1-6)
-            filter.level = { $ne: 7 };
-        }
 
         const members = await HierarchyMember.find(filter)
             .select('name contactNumber level roleName inviteCode shopName ancestorIds')
@@ -646,11 +640,32 @@ module.exports.setPrice = async (req, res) => {
         }
 
         const directorId = req.user.id || req.user._id;
+
+        // Resolve old price for audit log
+        const existingPricing = await ProductPricing.findOne({ productId, memberId });
+        let oldPrice = existingPricing ? existingPricing.retailPrice : 0;
+        if (!existingPricing) {
+            const Product = require('../models/Products.model');
+            const product = await Product.findById(productId);
+            oldPrice = product ? product.retailPrice : 0;
+        }
+
         const result = await ProductPricing.findOneAndUpdate(
             { productId, memberId },
             { retailPrice, setBy: directorId },
             { upsert: true, new: true }
         );
+
+        // Save price change audit log
+        const ProductPricingAudit = require('../models/ProductPricingAudit.model');
+        await ProductPricingAudit.create({
+            productId,
+            memberId,
+            oldPrice,
+            newPrice: retailPrice,
+            changedBy: directorId,
+            changeType: 'direct_override',
+        });
 
         res.json({ success: true, message: `Price updated successfully.`, pricing: result });
     } catch (error) {
@@ -759,9 +774,42 @@ module.exports.updatePriceRequest = async (req, res) => {
                 },
                 { upsert: true }
             );
+
+            // Log approved price request in audit logs
+            const ProductPricingAudit = require('../models/ProductPricingAudit.model');
+            await ProductPricingAudit.create({
+                productId: request.productId,
+                memberId: request.targetMemberId,
+                oldPrice: request.currentPrice,
+                newPrice: request.requestedPrice,
+                changedBy: req.user.id || req.user._id,
+                changeType: 'request_approval',
+            });
         }
 
         res.json({ success: true, message: `Request ${status}` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+module.exports.getPricingAuditLogs = async (req, res) => {
+    try {
+        const memberLevel = req.user.level ?? 1;
+        if (memberLevel < 7) {
+            return res.status(403).json({ success: false, message: 'Only Directors can view audit logs.' });
+        }
+
+        const ProductPricingAudit = require('../models/ProductPricingAudit.model');
+        const logs = await ProductPricingAudit.find()
+            .populate('productId', 'name')
+            .populate('memberId', 'name level roleName inviteCode')
+            .populate('changedBy', 'name')
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .lean();
+
+        res.json({ success: true, logs });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
