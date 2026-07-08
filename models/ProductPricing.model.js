@@ -11,10 +11,11 @@ const productPricingSchema = new mongoose.Schema({
         ref: 'Product',
         required: true,
     },
-    level: {
-        type: Number,
+    memberId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HierarchyMember',
         required: true,
-        enum: [1, 2, 3, 4, 5],
+        index: true,
     },
     retailPrice: {
         type: Number,
@@ -28,8 +29,8 @@ const productPricingSchema = new mongoose.Schema({
     },
 }, { timestamps: true });
 
-// Unique per product per level
-productPricingSchema.index({ productId: 1, level: 1 }, { unique: true });
+// Unique per product per member
+productPricingSchema.index({ productId: 1, memberId: 1 }, { unique: true });
 
 const ProductPricing = mongoose.model('ProductPricing', productPricingSchema);
 

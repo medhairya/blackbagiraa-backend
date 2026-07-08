@@ -15,28 +15,46 @@ module.exports.fetchProducts = async (req, res) => {
             return res.status(404).json({ success: false, message: "No products found" });
         }
 
-        // ── Level-specific pricing overlay ────────────────────────────────
-        // If the user is a HierarchyMember, override retailPrice with their level's price
-        const userLevel = req.user?.level;
-        if (userLevel && userLevel >= 1 && userLevel <= 5) {
+        // ── Level-specific / Member-specific pricing overlay ───────────────────
+        const rawId = req.user.id || req.user._id;
+        const HierarchyMember = require('../models/HierarchyMember.model');
+        const hierarchyUser = await HierarchyMember.findById(rawId).lean();
+
+        if (hierarchyUser && hierarchyUser.level >= 1 && hierarchyUser.level <= 5) {
             try {
                 const ProductPricing = require('../models/ProductPricing.model');
-                const levelPricing = await ProductPricing.find({ level: userLevel }).lean();
+                // The priority order is: [user's own id, parent's id, ..., root's id] (closest first)
+                const priorityIds = [
+                    new mongoose.Types.ObjectId(rawId),
+                    ...([...(hierarchyUser.ancestorIds || [])].reverse().map(id => new mongoose.Types.ObjectId(id)))
+                ];
+
+                const listPricing = await ProductPricing.find({ memberId: { $in: priorityIds } }).lean();
+
+                // Map productId to the resolved retailPrice based on closest match
                 const pricingMap = {};
-                for (const p of levelPricing) {
-                    pricingMap[p.productId.toString()] = p.retailPrice;
+                for (const pid of priorityIds) {
+                    const pidStr = pid.toString();
+                    const matchedPricing = listPricing.filter(p => p.memberId.toString() === pidStr);
+                    for (const pr of matchedPricing) {
+                        const prodIdStr = pr.productId.toString();
+                        if (pricingMap[prodIdStr] === undefined) {
+                            pricingMap[prodIdStr] = pr.retailPrice;
+                        }
+                    }
                 }
+
                 const productsWithPrice = products.map((product) => {
                     const obj = product.toObject();
-                    const levelPrice = pricingMap[obj._id.toString()];
-                    if (levelPrice !== undefined) {
-                        obj.retailPrice = levelPrice;
+                    const resolvedPrice = pricingMap[obj._id.toString()];
+                    if (resolvedPrice !== undefined) {
+                        obj.retailPrice = resolvedPrice;
                     }
                     return obj;
                 });
                 return res.status(200).json({ success: true, products: productsWithPrice });
             } catch (pricingErr) {
-                console.warn('Could not load level pricing, returning base prices:', pricingErr.message);
+                console.warn('Could not load member pricing, returning base prices:', pricingErr.message);
             }
         }
 

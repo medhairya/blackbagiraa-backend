@@ -23,6 +23,7 @@ const {
     changeMemberLevel,
     updateTarget,
     deleteTarget,
+    searchMembers,
 } = require('../controllers/Hierarchy.controller');
 
 const router = express.Router();
@@ -39,6 +40,7 @@ router.get('/dashboard-stats', getDashboardStats);
 
 // Team management
 router.get('/my-team', getMyTeam);
+router.get('/members/search', searchMembers);
 router.get('/members/:memberId', getMemberDetail);
 router.post('/members', addMemberByDirector);                   // Director: add Manager or SS
 router.patch('/members/:memberId/level', changeMemberLevel);    // Change subordinate level (levels 3-6)

@@ -24,10 +24,10 @@ const priceChangeRequestSchema = new mongoose.Schema({
         type: Number,
         required: true,
     },
-    targetLevel: {
-        type: Number,
+    targetMemberId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HierarchyMember',
         required: true,
-        enum: [1, 2, 3, 4, 5],
     },
     reason: { type: String },
     status: {

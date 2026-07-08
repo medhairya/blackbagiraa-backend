@@ -574,11 +574,53 @@ module.exports.deleteTarget = async (req, res) => {
 
 // ─── Pricing ───────────────────────────────────────────────────────────────────
 
+module.exports.searchMembers = async (req, res) => {
+    try {
+        const { q } = req.query;
+        const callerId = req.user.id || req.user._id;
+        const callerLevel = req.user.level ?? 1;
+
+        if (callerLevel < 6) {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        if (!q) {
+            return res.json({ success: true, members: [] });
+        }
+
+        const regex = new RegExp(q, 'i');
+        const filter = {
+            $or: [
+                { name: regex },
+                { contactNumber: regex },
+                { inviteCode: regex }
+            ]
+        };
+
+        // If caller is Manager (6), restrict to direct/indirect subordinates in their subtree
+        if (callerLevel === 6) {
+            filter.ancestorIds = callerId;
+        } else {
+            // Directors (7) can search any level below them (1-6)
+            filter.level = { $ne: 7 };
+        }
+
+        const members = await HierarchyMember.find(filter)
+            .select('name contactNumber level roleName inviteCode shopName')
+            .limit(20)
+            .lean();
+
+        res.json({ success: true, members });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 module.exports.getPricing = async (req, res) => {
     try {
         const [products, pricing] = await Promise.all([
             Product.find().sort({ name: 1 }).lean(),
-            ProductPricing.find().lean(),
+            ProductPricing.find().populate('memberId', 'name contactNumber level roleName inviteCode shopName').lean(),
         ]);
 
         res.json({ success: true, products, pricing });
@@ -587,7 +629,7 @@ module.exports.getPricing = async (req, res) => {
     }
 };
 
-/** Director directly sets a price for a product at a specific level */
+/** Director directly sets a price for a product for a specific member */
 module.exports.setPrice = async (req, res) => {
     try {
         const memberLevel = req.user.level ?? 1;
@@ -595,12 +637,9 @@ module.exports.setPrice = async (req, res) => {
             return res.status(403).json({ success: false, message: 'Only Directors can set prices directly.' });
         }
 
-        const { productId, level, retailPrice } = req.body;
-        if (!productId || !level || retailPrice === undefined) {
-            return res.status(400).json({ success: false, message: 'productId, level, and retailPrice are required.' });
-        }
-        if (level < 1 || level > 5) {
-            return res.status(400).json({ success: false, message: 'Level must be between 1 and 5.' });
+        const { productId, memberId, retailPrice } = req.body;
+        if (!productId || !memberId || retailPrice === undefined) {
+            return res.status(400).json({ success: false, message: 'productId, memberId, and retailPrice are required.' });
         }
         if (retailPrice < 0) {
             return res.status(400).json({ success: false, message: 'Price cannot be negative.' });
@@ -608,18 +647,18 @@ module.exports.setPrice = async (req, res) => {
 
         const directorId = req.user.id || req.user._id;
         const result = await ProductPricing.findOneAndUpdate(
-            { productId, level },
+            { productId, memberId },
             { retailPrice, setBy: directorId },
             { upsert: true, new: true }
         );
 
-        res.json({ success: true, message: `Price for level ${level} updated.`, pricing: result });
+        res.json({ success: true, message: `Price updated successfully.`, pricing: result });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
-/** Manager submits a price change request to the Director */
+/** Manager submits a price change request to the Director for a specific member */
 module.exports.createPriceRequest = async (req, res) => {
     try {
         const memberLevel = req.user.level ?? 1;
@@ -627,12 +666,12 @@ module.exports.createPriceRequest = async (req, res) => {
             return res.status(403).json({ success: false, message: 'Only Managers can submit price change requests.' });
         }
 
-        const { productId, targetLevel, requestedPrice, reason } = req.body;
-        if (!productId || !targetLevel || requestedPrice === undefined) {
-            return res.status(400).json({ success: false, message: 'productId, targetLevel, and requestedPrice are required.' });
+        const { productId, targetMemberId, requestedPrice, reason } = req.body;
+        if (!productId || !targetMemberId || requestedPrice === undefined) {
+            return res.status(400).json({ success: false, message: 'productId, targetMemberId, and requestedPrice are required.' });
         }
 
-        const existing = await ProductPricing.findOne({ productId, level: targetLevel }).lean();
+        const existing = await ProductPricing.findOne({ productId, memberId: targetMemberId }).lean();
         const currentPrice = existing?.retailPrice ?? 0;
         const requestedBy = req.user.id || req.user._id;
 
@@ -641,7 +680,7 @@ module.exports.createPriceRequest = async (req, res) => {
             productId,
             currentPrice,
             requestedPrice,
-            targetLevel,
+            targetMemberId,
             reason: reason || '',
             status: 'pending',
         });
@@ -660,15 +699,14 @@ module.exports.getPriceRequests = async (req, res) => {
 
         let filter = {};
         if (memberLevel >= 7) {
-            // Directors see all pending requests
             filter = {};
         } else {
-            // Others see only their own
             filter = { requestedBy: memberId };
         }
 
         const requests = await PriceChangeRequest.find(filter)
             .populate('requestedBy', 'name')
+            .populate('targetMemberId', 'name level roleName inviteCode')
             .populate('productId', 'name')
             .sort({ createdAt: -1 })
             .lean();
@@ -676,6 +714,8 @@ module.exports.getPriceRequests = async (req, res) => {
         const enriched = requests.map((r) => ({
             ...r,
             requestedByName: r.requestedBy?.name ?? 'Unknown',
+            targetMemberName: r.targetMemberId?.name ?? 'Unknown',
+            targetMemberLevel: r.targetMemberId?.level,
             productName: r.productId?.name ?? 'Unknown',
         }));
 
@@ -712,7 +752,7 @@ module.exports.updatePriceRequest = async (req, res) => {
         // If approved, update the actual pricing
         if (status === 'approved') {
             await ProductPricing.findOneAndUpdate(
-                { productId: request.productId, level: request.targetLevel },
+                { productId: request.productId, memberId: request.targetMemberId },
                 {
                     retailPrice: request.requestedPrice,
                     setBy: req.user.id || req.user._id,
@@ -899,7 +939,7 @@ module.exports.getReports = async (req, res) => {
 module.exports.updateProfile = async (req, res) => {
     try {
         const memberId = req.user.id || req.user._id;
-        const { name, shopName, contactNumber } = req.body;
+        const { name, shopName, password, inviteCode } = req.body;
 
         const member = await HierarchyMember.findById(memberId);
         if (!member) {
@@ -908,10 +948,29 @@ module.exports.updateProfile = async (req, res) => {
 
         if (name) member.name = name;
         if (shopName) member.shopName = shopName;
+
+        // Allow levels 2 to 6 to update inviteCode
+        if (inviteCode && member.level >= 2 && member.level <= 6) {
+            const cleanCode = inviteCode.trim().toUpperCase();
+            if (cleanCode !== member.inviteCode) {
+                const exists = await HierarchyMember.exists({ inviteCode: cleanCode, _id: { $ne: memberId } });
+                if (exists) {
+                    return res.status(400).json({ success: false, message: 'This invite code is already taken. Please choose another one.' });
+                }
+                member.inviteCode = cleanCode;
+            }
+        }
+
+        // Update password if provided
+        if (password) {
+            const bcrypt = require('bcryptjs');
+            member.password = await bcrypt.hash(password, 10);
+        }
+
         await member.save();
 
         const updatedMember = await HierarchyMember.findById(memberId).select('-password').lean();
-        res.json({ success: true, message: 'Profile updated', member: updatedMember });
+        res.json({ success: true, message: 'Profile updated successfully', member: updatedMember });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
