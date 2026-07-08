@@ -159,8 +159,22 @@ module.exports.logoutUser = async (req, res) => {
 
 module.exports.authUser = async (req, res) => {
     try {
-        const role = req.user?.role;
+        const rawId = req.user.id || req.user._id;
 
+        // Try HierarchyMember first
+        const HierarchyMember = require('../models/HierarchyMember.model');
+        const hierarchyMember = await HierarchyMember.findById(rawId).select('-password');
+        if (hierarchyMember) {
+            return res.status(200).json({
+                success: true,
+                message: 'Authentication successful',
+                user: hierarchyMember,
+                role: hierarchyMember.roleName,
+                level: hierarchyMember.level,
+            });
+        }
+
+        const role = req.user?.role;
         if (role === 'main_admin' || role === 'super_stockist') {
             const staffId = getStaffId(req);
             const admin = await Admin.findById(staffId).select('-password');
@@ -172,7 +186,7 @@ module.exports.authUser = async (req, res) => {
             });
         }
 
-        const userData = await User.findById(req.user._id).populate('superStockistId', 'name stockistCode');
+        const userData = await User.findById(rawId).populate('superStockistId', 'name stockistCode');
         res.status(200).json({
             success: true,
             message: 'Authentication successful',

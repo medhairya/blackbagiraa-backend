@@ -21,6 +21,8 @@ const {
     lookupInvite,
     registerWithInvite,
     changeMemberLevel,
+    updateTarget,
+    deleteTarget,
 } = require('../controllers/Hierarchy.controller');
 
 const router = express.Router();
@@ -47,6 +49,8 @@ router.get('/team-orders', getTeamOrders);
 // Target management
 router.get('/targets', getTargets);
 router.post('/targets', createTarget);
+router.put('/targets/:targetId', updateTarget);
+router.delete('/targets/:targetId', deleteTarget);
 
 // Pricing (Directors + Managers)
 router.get('/pricing', getPricing);

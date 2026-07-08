@@ -519,6 +519,59 @@ module.exports.createTarget = async (req, res) => {
     }
 };
 
+module.exports.updateTarget = async (req, res) => {
+    try {
+        const callerId = req.user.id || req.user._id;
+        const callerLevel = req.user.level ?? 1;
+        const { targetId } = req.params;
+        const { targetValue } = req.body;
+
+        if (targetValue === undefined || targetValue < 0) {
+            return res.status(400).json({ success: false, message: 'Valid targetValue is required.' });
+        }
+
+        const target = await Target.findById(targetId);
+        if (!target) {
+            return res.status(404).json({ success: false, message: 'Target not found.' });
+        }
+
+        // Only allow the person who assigned it or a Director to edit it
+        if (target.assignedBy.toString() !== callerId.toString() && callerLevel < 7) {
+            return res.status(403).json({ success: false, message: 'You do not have permission to edit this target.' });
+        }
+
+        target.targetValue = targetValue;
+        await target.save();
+
+        res.json({ success: true, message: 'Target updated successfully', target });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+module.exports.deleteTarget = async (req, res) => {
+    try {
+        const callerId = req.user.id || req.user._id;
+        const callerLevel = req.user.level ?? 1;
+        const { targetId } = req.params;
+
+        const target = await Target.findById(targetId);
+        if (!target) {
+            return res.status(404).json({ success: false, message: 'Target not found.' });
+        }
+
+        // Only allow the person who assigned it or a Director to delete it
+        if (target.assignedBy.toString() !== callerId.toString() && callerLevel < 7) {
+            return res.status(403).json({ success: false, message: 'You do not have permission to delete this target.' });
+        }
+
+        await Target.findByIdAndDelete(targetId);
+        res.json({ success: true, message: 'Target deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // ─── Pricing ───────────────────────────────────────────────────────────────────
 
 module.exports.getPricing = async (req, res) => {
