@@ -606,7 +606,7 @@ module.exports.searchMembers = async (req, res) => {
         }
 
         const members = await HierarchyMember.find(filter)
-            .select('name contactNumber level roleName inviteCode shopName')
+            .select('name contactNumber level roleName inviteCode shopName ancestorIds')
             .limit(20)
             .lean();
 
