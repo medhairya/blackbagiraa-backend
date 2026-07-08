@@ -16,16 +16,21 @@ module.exports.fetchProducts = async (req, res) => {
         }
 
         // ── Level-specific / Member-specific pricing overlay ───────────────────
-        const rawId = req.user.id || req.user._id;
+        let lookupId = req.user.id || req.user._id;
+        const callerLevel = req.user.level ?? 1;
+        if (req.query.onBehalfOf && callerLevel >= 6) {
+            lookupId = req.query.onBehalfOf;
+        }
+
         const HierarchyMember = require('../models/HierarchyMember.model');
-        const hierarchyUser = await HierarchyMember.findById(rawId).lean();
+        const hierarchyUser = await HierarchyMember.findById(lookupId).lean();
 
         if (hierarchyUser && hierarchyUser.level >= 1 && hierarchyUser.level <= 5) {
             try {
                 const ProductPricing = require('../models/ProductPricing.model');
                 // The priority order is: [user's own id, parent's id, ..., root's id] (closest first)
                 const priorityIds = [
-                    new mongoose.Types.ObjectId(rawId),
+                    new mongoose.Types.ObjectId(lookupId),
                     ...([...(hierarchyUser.ancestorIds || [])].reverse().map(id => new mongoose.Types.ObjectId(id)))
                 ];
 
@@ -66,11 +71,15 @@ module.exports.fetchProducts = async (req, res) => {
 
 module.exports.saveCart = async (req, res) => {
     try {
-        const { cart } = req.body;
+        const { cart, onBehalfOf } = req.body;
         if (!cart) {
             return res.status(400).json({ success: false, message: "Cart is required" });
         }
-        const userId = req.user._id;
+        const callerLevel = req.user.level ?? 1;
+        let userId = req.user._id;
+        if (onBehalfOf && callerLevel >= 6) {
+            userId = onBehalfOf;
+        }
         
         // Extract only productId and quantity from cart items
         const cartItems = new Map();
@@ -112,7 +121,11 @@ module.exports.saveCart = async (req, res) => {
 
 module.exports.fetchCart = async (req, res) => {
     try {
-        const userId = req.user._id;
+        const callerLevel = req.user.level ?? 1;
+        let userId = req.user._id;
+        if (req.query.onBehalfOf && callerLevel >= 6) {
+            userId = req.query.onBehalfOf;
+        }
         const cartData = await Cart.findOne({ userId });
         
         if (!cartData || !cartData.items || cartData.items.size === 0) {
@@ -166,7 +179,11 @@ module.exports.placeOrder = async (req, res) => {
 
         // ── Resolve user identity: support both HierarchyMember (levels 1-5) and legacy User ──
         const HierarchyMember = require('../models/HierarchyMember.model');
-        const rawId = req.user.id || req.user._id;
+        const callerLevel = req.user.level ?? 1;
+        let rawId = req.user.id || req.user._id;
+        if (req.body.onBehalfOf && callerLevel >= 6) {
+            rawId = req.body.onBehalfOf;
+        }
         let userId, shippingAddress, superStockistId;
 
         // Try HierarchyMember first (new system)
