@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Cart = require('../models/Cart.model');
 const Product = require('../models/Products.model');
 const { placeOrder } = require('../services/Product.service');
@@ -164,6 +165,41 @@ module.exports.placeOrder = async (req, res) => {
     try {
         const { items, totalAmount, paymentMethod } = req.body;
 
+        // ── Resolve user identity: support both HierarchyMember (levels 1-5) and legacy User ──
+        const HierarchyMember = require('../models/HierarchyMember.model');
+        const callerLevel = req.user.level ?? 1;
+        let rawId = req.user.id || req.user._id;
+        if (req.body.onBehalfOf && callerLevel >= 6) {
+            rawId = req.body.onBehalfOf;
+        }
+
+        // Resolve custom pricing for this member (or the onBehalfOf member)
+        let pricingMap = {};
+        const hierarchyUser = await HierarchyMember.findById(rawId).lean();
+        if (hierarchyUser && hierarchyUser.level >= 1 && hierarchyUser.level <= 5) {
+            try {
+                const ProductPricing = require('../models/ProductPricing.model');
+                const priorityIds = [
+                    new mongoose.Types.ObjectId(rawId),
+                    ...([...(hierarchyUser.ancestorIds || [])].reverse().map(id => new mongoose.Types.ObjectId(id)))
+                ];
+                const listPricing = await ProductPricing.find({ memberId: { $in: priorityIds } }).lean();
+                
+                for (const pid of priorityIds) {
+                    const pidStr = pid.toString();
+                    const matchedPricing = listPricing.filter(p => p.memberId.toString() === pidStr);
+                    for (const pr of matchedPricing) {
+                        const prodIdStr = pr.productId.toString();
+                        if (pricingMap[prodIdStr] === undefined) {
+                            pricingMap[prodIdStr] = pr.retailPrice;
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn('Could not resolve pricing for order, using frontend/base prices:', err.message);
+            }
+        }
+
         // Normalize items: accept both array and object formats
         let normalizedItems = items;
         if (Array.isArray(items)) {
@@ -175,30 +211,33 @@ module.exports.placeOrder = async (req, res) => {
             }
         }
 
-        // Build itemsData map from request
+        // Build itemsData map from request using resolved custom pricing
         const itemsData = new Map();
         for (const [key, item] of Object.entries(normalizedItems)) {
             const productId = item.productId || item._id || key;
             const quantity = item.quantity || 1;
             const product = await Product.findById(productId);
             if (product) {
-                itemsData.set(productId, { ...product.toObject(), quantity });
+                const resolvedPrice = pricingMap[product._id.toString()] ?? item.retailPrice ?? product.retailPrice;
+                itemsData.set(productId, {
+                    _id: product._id.toString(),
+                    name: product.name,
+                    image: product.image,
+                    MRP: product.MRP,
+                    retailPrice: resolvedPrice,
+                    scheme: product.scheme || '',
+                    boxQuantity: product.boxQuantity || 1,
+                    category: product.category,
+                    quantity: quantity
+                });
             } else {
                 console.warn(`Product not found: ${productId}`);
             }
         }
 
-        // ── Resolve user identity: support both HierarchyMember (levels 1-5) and legacy User ──
-        const HierarchyMember = require('../models/HierarchyMember.model');
-        const callerLevel = req.user.level ?? 1;
-        let rawId = req.user.id || req.user._id;
-        if (req.body.onBehalfOf && callerLevel >= 6) {
-            rawId = req.body.onBehalfOf;
-        }
         let userId, shippingAddress, superStockistId;
 
         // Try HierarchyMember first (new system)
-        const hierarchyUser = await HierarchyMember.findById(rawId);
         if (hierarchyUser) {
             userId = hierarchyUser._id;
             // Use 'N/A' fallbacks — Mongoose 8 rejects empty strings on required fields
@@ -257,14 +296,14 @@ module.exports.placeOrder = async (req, res) => {
 
 module.exports.fetchOrders = async (req, res) => {
     try {
-        const userId = req.user._id;
-        const orders = await CartOrder.find({ userId });
+        const userId = req.user.id || req.user._id;
+        const orders = await CartOrder.find({ userId }).sort({ createdAt: -1 });
         if (!orders) {
             return res.status(404).json({ success: false, message: "No orders found" });
         }
         res.status(200).json({ success: true, orders });
     } catch (error) {
-        console.log(error);
+        console.log('fetchOrders error:', error);
         res.status(500).json({ success: false, message: "Internal server error" });
     }
 }

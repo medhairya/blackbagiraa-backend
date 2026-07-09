@@ -20,6 +20,7 @@ module.exports.placeOrder = async ({
         await order.save();
         return { success: true, order };
     } catch (error) {
-        throw new Error('Failed to place order');
+        console.error('Error saving order in service:', error);
+        throw error;
     }
 };

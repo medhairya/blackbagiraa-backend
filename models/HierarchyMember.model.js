@@ -50,6 +50,7 @@ const hierarchyMemberSchema = new mongoose.Schema({
     // Business details
     shopName: { type: String, trim: true },
     gstNumber: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
     address: {
         line1: { type: String },
         city: { type: String },
