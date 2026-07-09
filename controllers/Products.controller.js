@@ -272,7 +272,7 @@ module.exports.placeOrder = async (req, res) => {
             userId,
             superStockistId,
             items: itemsData,
-            totalAmount,
+            totalAmount: Math.round(totalAmount / 10) * 10,
             paymentMethod,
             shippingAddress,
         });
@@ -446,6 +446,23 @@ module.exports.updateOrderStatus = async (req, res) => {
             return res.status(404).json({ success: false, message: "Order not found" });
         }
 
+        const callerId = req.user.id || req.user._id;
+        const role = req.user?.role;
+
+        // Enforce that only supervisors can update order status
+        if (existing.userId.toString() === callerId.toString()) {
+            return res.status(403).json({ success: false, message: "Forbidden: You cannot update the status of your own orders." });
+        }
+
+        if (role !== 'main_admin') {
+            const HierarchyMember = require('../models/HierarchyMember.model');
+            const buyer = await HierarchyMember.findById(existing.userId);
+            const isSupervisor = buyer?.ancestorIds?.some((id) => id.toString() === callerId.toString());
+            if (!isSupervisor) {
+                return res.status(403).json({ success: false, message: "Forbidden: Only supervisors are allowed to update order status." });
+            }
+        }
+
         const oldStatus = existing.status;
         const order = await CartOrder.findByIdAndUpdate(
             orderId,
@@ -477,6 +494,23 @@ module.exports.updatePaymentStatus = async (req, res) => {
         const existing = await CartOrder.findById(orderId);
         if (!existing) {
             return res.status(404).json({ success: false, message: "Order not found" });
+        }
+
+        const callerId = req.user.id || req.user._id;
+        const role = req.user?.role;
+
+        // Enforce that only supervisors can update payment status
+        if (existing.userId.toString() === callerId.toString()) {
+            return res.status(403).json({ success: false, message: "Forbidden: You cannot update the payment status of your own orders." });
+        }
+
+        if (role !== 'main_admin') {
+            const HierarchyMember = require('../models/HierarchyMember.model');
+            const buyer = await HierarchyMember.findById(existing.userId);
+            const isSupervisor = buyer?.ancestorIds?.some((id) => id.toString() === callerId.toString());
+            if (!isSupervisor) {
+                return res.status(403).json({ success: false, message: "Forbidden: Only supervisors are allowed to update order payment status." });
+            }
         }
 
         const order = await CartOrder.findByIdAndUpdate(orderId, { paymentStatus: paymentStatus },

@@ -470,6 +470,7 @@ module.exports.getTeamOrders = async (req, res) => {
 
             return {
                 _id: order._id,
+                buyerId: order.userId?._id?.toString() || order.userId?.toString() || '',
                 orderId,
                 items,
                 totalAmount: order.totalAmount,
