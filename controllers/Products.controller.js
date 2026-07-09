@@ -297,11 +297,33 @@ module.exports.placeOrder = async (req, res) => {
 module.exports.fetchOrders = async (req, res) => {
     try {
         const userId = req.user.id || req.user._id;
-        const orders = await CartOrder.find({ userId }).sort({ createdAt: -1 });
+        const queryId = new mongoose.Types.ObjectId(userId);
+        const orders = await CartOrder.find({ userId: queryId }).sort({ createdAt: -1 });
         if (!orders) {
             return res.status(404).json({ success: false, message: "No orders found" });
         }
-        res.status(200).json({ success: true, orders });
+
+        // Transform for user client side rendering (arrays instead of maps, correct status label keys)
+        const transformed = orders.map((order) => {
+            const items = order.items instanceof Map
+                ? [...order.items.values()]
+                : Object.values(order.items || {});
+
+            return {
+                _id: order._id,
+                orderId: order._id.toString().slice(-8).toUpperCase(),
+                items,
+                totalAmount: order.totalAmount,
+                orderStatus: order.status,
+                paymentStatus: order.paymentStatus,
+                paymentMethod: order.paymentMethod,
+                createdAt: order.createdAt,
+                placedByName: order.shippingAddress?.customerName ?? 'Self',
+                shopName: order.shippingAddress?.shopName ?? 'N/A'
+            };
+        });
+
+        res.status(200).json({ success: true, orders: transformed });
     } catch (error) {
         console.log('fetchOrders error:', error);
         res.status(500).json({ success: false, message: "Internal server error" });
@@ -323,6 +345,38 @@ module.exports.adminFetchOrders = async (req, res) => {
     }
 }
 
+// Helper to update target achievements when an order is delivered or moved away from delivered
+async function updateTargetAchievement(order, oldStatus, newStatus) {
+    if (oldStatus === newStatus) return;
+
+    const isDeliveredNow = newStatus === 'delivered';
+    const wasDeliveredBefore = oldStatus === 'delivered';
+
+    if (isDeliveredNow === wasDeliveredBefore) return;
+
+    const HierarchyMember = require('../models/HierarchyMember.model');
+    const buyer = await HierarchyMember.findById(order.userId);
+    if (!buyer || !buyer.parentId) return;
+
+    const Target = require('../models/Target.model');
+    const activeTargets = await Target.find({
+        assignedTo: buyer.parentId,
+        periodStart: { $lte: order.createdAt },
+        periodEnd: { $gte: order.createdAt }
+    });
+
+    const multiplier = isDeliveredNow ? 1 : -1;
+
+    for (const target of activeTargets) {
+        if (target.targetType === 'revenue') {
+            target.achieved = Math.max(0, target.achieved + (order.totalAmount * multiplier));
+        } else if (target.targetType === 'orders') {
+            target.achieved = Math.max(0, target.achieved + (1 * multiplier));
+        }
+        await target.save();
+    }
+}
+
 module.exports.adminUpdateOrderStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -334,6 +388,7 @@ module.exports.adminUpdateOrderStatus = async (req, res) => {
         if (!(await assertOrderInScope(req, existing))) {
             return res.status(403).json({ success: false, message: "Forbidden" });
         }
+        const oldStatus = existing.status;
         const order = await CartOrder.findByIdAndUpdate(
             orderId,
             { status: status },
@@ -342,13 +397,21 @@ module.exports.adminUpdateOrderStatus = async (req, res) => {
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found" });
         }
+
+        try {
+            await updateTargetAchievement(order, oldStatus, status);
+        } catch (tErr) {
+            console.error('Target sync failed:', tErr.message);
+        }
+
         getIo().emit('orderStatusUpdated', { success: true, message: "Order status updated successfully", order });
-        res.status(200).json({ success: true, message: "Order status updated successfully" });
+        res.status(200).json({ success: true, message: "Order status updated successfully", order });
     } catch (error) {
         console.log(error);
         res.status(500).json({ success: false, message: "Internal server error" });
     }
 }
+
 module.exports.adminUpdatePaymentStatus = async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -367,12 +430,67 @@ module.exports.adminUpdatePaymentStatus = async (req, res) => {
             return res.status(404).json({ success: false, message: "Order not found" });
         }
         getIo().emit('paymentStatusUpdated', { success: true, message: "Payment status updated successfully", order })
-        res.status(200).json({ success: true, message: "Payment status updated successfully" });
-
+        res.status(200).json({ success: true, message: "Payment status updated successfully", order });
     } catch (error) {
         console.log(error);
         res.status(500).json({ success: false, message: "Internal server error" });
+    }
+}
 
+module.exports.updateOrderStatus = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { status } = req.body;
+        const existing = await CartOrder.findById(orderId);
+        if (!existing) {
+            return res.status(404).json({ success: false, message: "Order not found" });
+        }
+
+        const oldStatus = existing.status;
+        const order = await CartOrder.findByIdAndUpdate(
+            orderId,
+            { status: status },
+            { new: true }
+        );
+        if (!order) {
+            return res.status(404).json({ success: false, message: "Order not found" });
+        }
+
+        try {
+            await updateTargetAchievement(order, oldStatus, status);
+        } catch (tErr) {
+            console.error('Target sync failed:', tErr.message);
+        }
+
+        getIo().emit('orderStatusUpdated', { success: true, message: "Order status updated successfully", order });
+        res.status(200).json({ success: true, message: "Order status updated successfully", order });
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({ success: false, message: "Internal server error" });
+    }
+}
+
+module.exports.updatePaymentStatus = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { paymentStatus } = req.body;
+        const existing = await CartOrder.findById(orderId);
+        if (!existing) {
+            return res.status(404).json({ success: false, message: "Order not found" });
+        }
+
+        const order = await CartOrder.findByIdAndUpdate(orderId, { paymentStatus: paymentStatus },
+            { new: true }
+        );
+        if (!order) {
+            return res.status(404).json({ success: false, message: "Order not found" });
+        }
+
+        getIo().emit('paymentStatusUpdated', { success: true, message: "Payment status updated successfully", order });
+        res.status(200).json({ success: true, message: "Payment status updated successfully", order });
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({ success: false, message: "Internal server error" });
     }
 }
 module.exports.adminFetchStatsData = async (req, res) => {

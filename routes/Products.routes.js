@@ -5,6 +5,8 @@ const {
     fetchCart,
     placeOrder,
     fetchOrders,
+    updateOrderStatus,
+    updatePaymentStatus,
     adminFetchOrders,
     adminUpdateOrderStatus,
     adminUpdatePaymentStatus,
@@ -30,6 +32,8 @@ router.post('/saveCart', ...orderingAccess, saveCart);
 router.get('/fetchCart', ...orderingAccess, fetchCart);
 router.post('/placeOrder', ...orderingAccess, placeOrder);
 router.get('/fetchOrders', ...orderingAccess, fetchOrders);
+router.put('/updateOrderStatus/:orderId', authMiddleware, updateOrderStatus);
+router.put('/updatePaymentStatus/:orderId', authMiddleware, updatePaymentStatus);
 
 router.get('/admin/fetchOrders', ...staffOnly, adminFetchOrders);
 router.put('/admin/updateOrderStatus/:orderId', ...staffOnly, adminUpdateOrderStatus);
