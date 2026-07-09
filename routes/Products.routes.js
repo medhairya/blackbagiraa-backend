@@ -22,8 +22,8 @@ const { getUploader } = require('../utils/uplode');
 const uploder = getUploader('productImg');
 
 const staffOnly = [authMiddleware, requireRole('main_admin', 'super_stockist')];
-// Ordering routes are open to levels 1-5 (all sales members who can purchase)
-const orderingAccess = [authMiddleware, requireMaxLevel(5)];
+// Ordering routes: all authenticated members can access (supervisors use onBehalfOf)
+const orderingAccess = [authMiddleware];
 
 router.get('/fetchProducts', authMiddleware, fetchProducts);
 router.post('/saveCart', ...orderingAccess, saveCart);

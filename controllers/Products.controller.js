@@ -164,14 +164,25 @@ module.exports.placeOrder = async (req, res) => {
     try {
         const { items, totalAmount, paymentMethod } = req.body;
 
+        // Normalize items: accept both array and object formats
+        let normalizedItems = items;
+        if (Array.isArray(items)) {
+            // Convert array to object keyed by productId
+            normalizedItems = {};
+            for (const item of items) {
+                const pid = item.productId || item._id;
+                if (pid) normalizedItems[pid] = item;
+            }
+        }
+
         // Build itemsData map from request
         const itemsData = new Map();
-        for (const [key, item] of Object.entries(items)) {
+        for (const [key, item] of Object.entries(normalizedItems)) {
             const productId = item.productId || item._id || key;
             const quantity = item.quantity || 1;
             const product = await Product.findById(productId);
             if (product) {
-                itemsData.set(key, { ...product.toObject(), quantity });
+                itemsData.set(productId, { ...product.toObject(), quantity });
             } else {
                 console.warn(`Product not found: ${productId}`);
             }
@@ -190,13 +201,14 @@ module.exports.placeOrder = async (req, res) => {
         const hierarchyUser = await HierarchyMember.findById(rawId);
         if (hierarchyUser) {
             userId = hierarchyUser._id;
+            // Use 'N/A' fallbacks — Mongoose 8 rejects empty strings on required fields
             shippingAddress = {
-                addressLine1: hierarchyUser.address?.line1 || '',
-                city: hierarchyUser.address?.city || '',
-                state: hierarchyUser.address?.state || '',
-                pincode: hierarchyUser.address?.pincode || '',
-                shopName: hierarchyUser.shopName || '',
-                customerName: hierarchyUser.name || '',
+                addressLine1: hierarchyUser.address?.line1 || 'N/A',
+                city: hierarchyUser.address?.city || 'N/A',
+                state: hierarchyUser.address?.state || 'N/A',
+                pincode: hierarchyUser.address?.pincode || '000000',
+                shopName: hierarchyUser.shopName || 'N/A',
+                customerName: hierarchyUser.name || 'N/A',
             };
             superStockistId = hierarchyUser.parentId || null;
         } else {
@@ -207,12 +219,12 @@ module.exports.placeOrder = async (req, res) => {
             }
             userId = userData._id;
             shippingAddress = {
-                addressLine1: userData.addressLine1,
-                city: userData.city,
-                state: userData.state,
-                pincode: userData.pincode,
-                shopName: userData.shopName,
-                customerName: userData.customerName,
+                addressLine1: userData.addressLine1 || 'N/A',
+                city: userData.city || 'N/A',
+                state: userData.state || 'N/A',
+                pincode: userData.pincode || '000000',
+                shopName: userData.shopName || 'N/A',
+                customerName: userData.customerName || 'N/A',
             };
             superStockistId = userData.superStockistId;
         }
@@ -237,10 +249,11 @@ module.exports.placeOrder = async (req, res) => {
         }
         res.status(200).json({ success: true, order });
     } catch (error) {
-        console.log(error);
-        res.status(500).json({ success: false, message: 'Internal server error' });
+        console.log('placeOrder error:', error);
+        res.status(500).json({ success: false, message: error.message || 'Internal server error' });
     }
 }
+
 
 module.exports.fetchOrders = async (req, res) => {
     try {

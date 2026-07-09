@@ -7,6 +7,7 @@ const ProductPricing = require('../models/ProductPricing.model');
 const PriceChangeRequest = require('../models/PriceChangeRequest.model');
 const CartOrder = require('../models/Orders.model');
 const Product = require('../models/Products.model');
+const { getIo } = require('../socket');
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -700,6 +701,9 @@ module.exports.createPriceRequest = async (req, res) => {
             status: 'pending',
         });
 
+        // Emit live event so Directors see new requests immediately
+        try { getIo().emit('priceRequestCreated', priceRequest); } catch (_) {}
+
         res.status(201).json({ success: true, message: 'Price change request submitted.', request: priceRequest });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -787,8 +791,18 @@ module.exports.updatePriceRequest = async (req, res) => {
             });
         }
 
+        // Emit live event so Managers see approval/rejection immediately
+        try { getIo().emit('priceRequestUpdated', { requestId, status }); } catch (_) {}
+
         res.json({ success: true, message: `Request ${status}` });
     } catch (error) {
+        // Provide clearer error for duplicate key issues
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: 'A stale database index is blocking this operation. Please restart the server to run the migration, or manually drop the "productid_1_level_1" index from the productpricings collection.',
+            });
+        }
         res.status(500).json({ success: false, message: error.message });
     }
 };
