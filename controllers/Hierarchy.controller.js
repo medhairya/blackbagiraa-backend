@@ -1361,7 +1361,7 @@ module.exports.getLeaderboard = async (req, res) => {
 
                     const orderMatch = {
                         userId: { $in: allUserIds },
-                        status: { $ne: 'cancelled' },
+                        paymentStatus: 'paid',
                         ...dateFilter,
                     };
 
@@ -1392,7 +1392,7 @@ module.exports.getLeaderboard = async (req, res) => {
         } else {
             // Rank individual buyers / members by sales
             const orderMatch = {
-                status: { $ne: 'cancelled' },
+                paymentStatus: 'paid',
                 ...dateFilter,
             };
 
@@ -1444,12 +1444,12 @@ module.exports.getLeaderboard = async (req, res) => {
         // Strip numbers for non-directors (Managers get null)
         const leaderboard = rankedList.map((item, index) => ({
             rank: index + 1,
-            memberId: item._id,
+            memberId: item._id?.toString() ?? String(index + 1),
             name: item.name,
             roleName: item.roleName,
             level: item.level,
             shopName: item.shopName,
-            teamSize: item.teamSize,
+            teamSize: item.teamSize ?? 0,
             // Numbers are only exposed to Directors (L7)
             totalSales: isDirector ? item.totalSales : null,
             orderCount: isDirector ? item.orderCount : null,
