@@ -1441,7 +1441,7 @@ module.exports.getLeaderboard = async (req, res) => {
             return b.orderCount - a.orderCount;
         });
 
-        // Strip numbers for non-directors (Managers get null)
+        // All Level 6+ users see the full sales numbers
         const leaderboard = rankedList.map((item, index) => ({
             rank: index + 1,
             memberId: item._id?.toString() ?? String(index + 1),
@@ -1450,9 +1450,8 @@ module.exports.getLeaderboard = async (req, res) => {
             level: item.level,
             shopName: item.shopName,
             teamSize: item.teamSize ?? 0,
-            // Numbers are only exposed to Directors (L7)
-            totalSales: isDirector ? item.totalSales : null,
-            orderCount: isDirector ? item.orderCount : null,
+            totalSales: item.totalSales,
+            orderCount: item.orderCount,
         }));
 
         res.json({
