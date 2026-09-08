@@ -14,12 +14,12 @@ const { getIo } = require('../socket');
 
 /**
  * Get all descendant IDs of a member (everyone who has this member in their ancestorIds).
- * For Directors/Managers: returns ALL members.
- * For others: returns only those in their subtree.
+ * For Directors (L7): returns ALL members.
+ * For Managers (L6) and below: returns only those in their subtree.
  */
 async function getDescendantIds(memberId, memberLevel) {
-    if (memberLevel >= 6) {
-        // Directors and Managers see everyone
+    if (memberLevel >= 7) {
+        // Only Directors see everyone
         const all = await HierarchyMember.find({}, '_id').lean();
         return all.map((m) => m._id);
     }
@@ -557,8 +557,8 @@ module.exports.getMemberDetail = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Member not found' });
         }
 
-        // Scope check: requester must be an ancestor or director/manager
-        if (requesterLevel < 6 && !member.ancestorIds?.map(String).includes(String(requesterId))) {
+        // Scope check: Directors (L7) see anyone; others can only view themselves or their descendants
+        if (requesterLevel < 7 && String(member._id) !== String(requesterId) && !member.ancestorIds?.map(String).includes(String(requesterId))) {
             return res.status(403).json({ success: false, message: 'Access denied' });
         }
 
