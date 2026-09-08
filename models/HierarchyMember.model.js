@@ -21,7 +21,8 @@ const hierarchyMemberSchema = new mongoose.Schema({
     password: {
         type: String,
         required: true,
-        select: false,
+        // NOTE: select is NOT false — admins (L6+) need to retrieve passwords.
+        // Controller-level logic controls who can see this field.
     },
     level: {
         type: Number,
@@ -97,9 +98,10 @@ function generateInviteCode(name, contact) {
 
 // ─── Hooks ─────────────────────────────────────────────────────────────────────
 hierarchyMemberSchema.pre('save', async function (next) {
-    if (this.isModified('password')) {
-        this.password = await bcrypt.hash(this.password, 10);
-    }
+    // Passwords are stored in PLAIN TEXT so that Directors/Managers can
+    // retrieve and share them with team members who forget their password.
+    // No hashing is performed on new passwords.
+
     // Auto-generate invite code for levels 2+ that don't have one yet
     if (this.isNew && this.level >= 2 && !this.inviteCode) {
         let code, exists;
@@ -128,8 +130,17 @@ hierarchyMemberSchema.methods.generateToken = function () {
     );
 };
 
+/**
+ * Compare a candidate password with the stored password.
+ * Handles both legacy bcrypt-hashed passwords and new plain-text passwords.
+ */
 hierarchyMemberSchema.methods.comparePassword = async function (candidate) {
-    return bcrypt.compare(candidate, this.password);
+    // Check if stored password is a bcrypt hash (starts with $2a$ or $2b$)
+    if (this.password && (this.password.startsWith('$2a$') || this.password.startsWith('$2b$'))) {
+        return bcrypt.compare(candidate, this.password);
+    }
+    // Plain-text comparison for new passwords
+    return candidate === this.password;
 };
 
 const HierarchyMember = mongoose.model('HierarchyMember', hierarchyMemberSchema);
