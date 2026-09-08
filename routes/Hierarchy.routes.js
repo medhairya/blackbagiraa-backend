@@ -27,6 +27,7 @@ const {
     deleteTarget,
     searchMembers,
     getPricingAuditLogs,
+    getAuditLogs,
 } = require('../controllers/Hierarchy.controller');
 
 const router = express.Router();
@@ -69,6 +70,9 @@ router.post('/pricing/requests', createPriceRequest);          // Manager: submi
 router.get('/pricing/requests', getPriceRequests);
 router.put('/pricing/requests/:requestId', updatePriceRequest);
 router.get('/pricing/audit-logs', getPricingAuditLogs);
+
+// Audit Logs (Directors only — full system history)
+router.get('/audit-logs', getAuditLogs);
 
 // Customer management
 router.get('/customers', getCustomers);

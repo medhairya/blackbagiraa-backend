@@ -7,6 +7,7 @@ const ProductPricing = require('../models/ProductPricing.model');
 const PriceChangeRequest = require('../models/PriceChangeRequest.model');
 const CartOrder = require('../models/Orders.model');
 const Product = require('../models/Products.model');
+const AuditLog = require('../models/AuditLog.model');
 const { getIo } = require('../socket');
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -68,6 +69,37 @@ const LEVEL_TO_ROLE = {
     2: 'wholesaler',
     1: 'retailer',
 };
+
+// ─── Audit Log Helper ──────────────────────────────────────────────────────────
+
+/**
+ * Silently write an audit log entry. Failures are caught and ignored so that
+ * they never break the main request flow.
+ *
+ * @param {Request}  req          - Express request (used to read req.user and IP)
+ * @param {string}   action       - One of the AuditLog.action enum values
+ * @param {ObjectId|null} targetId - The affected member's _id (or null)
+ * @param {string|null}  targetName - The affected member's name snapshot
+ * @param {object}   details      - Free-form change details (old/new values, etc.)
+ */
+async function logAction(req, action, targetId, targetName, details = {}) {
+    try {
+        const performedBy = req.user.id || req.user._id;
+        await AuditLog.create({
+            action,
+            performedBy,
+            performedByName: req.user.name || null,
+            performedByLevel: req.user.level || null,
+            performedByRole: req.user.roleName || LEVEL_TO_ROLE[req.user.level] || null,
+            targetMember: targetId || null,
+            targetMemberName: targetName || null,
+            details,
+            ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+        });
+    } catch (_) {
+        // Audit log failures must never crash the main endpoint
+    }
+}
 
 // ─── Member Registration & Management ─────────────────────────────────────────
 
@@ -131,17 +163,20 @@ module.exports.adminAddMember = async (req, res) => {
                 return res.status(403).json({ success: false, message: 'The specified parent account is deactivated.' });
             }
 
-            // Validate parent is in caller's subtree (or is the caller themselves)
-            const parentId = parentMember._id.toString();
-            if (parentId !== callerId.toString()) {
-                const isInSubtree = parentMember.ancestorIds?.some(
-                    (id) => id.toString() === callerId.toString()
-                );
-                if (!isInSubtree) {
-                    return res.status(403).json({
-                        success: false,
-                        message: 'The specified parent is not in your hierarchy. You can only add members under yourself or your subordinates.',
-                    });
+            // Directors (L7) can place members anywhere in the database.
+            // Managers (L6) can only place members within their own subtree.
+            if (callerLevel < 7) {
+                const parentId = parentMember._id.toString();
+                if (parentId !== callerId.toString()) {
+                    const isInSubtree = parentMember.ancestorIds?.some(
+                        (id) => id.toString() === callerId.toString()
+                    );
+                    if (!isInSubtree) {
+                        return res.status(403).json({
+                            success: false,
+                            message: 'The specified parent is not in your hierarchy. You can only add members under yourself or your subordinates.',
+                        });
+                    }
                 }
             }
 
@@ -185,6 +220,17 @@ module.exports.adminAddMember = async (req, res) => {
         });
 
         await member.save();
+
+        // ── Audit log ───────────────────────────────────────────────────────
+        logAction(req, 'add_member', member._id, member.name, {
+            newMemberName: member.name,
+            newMemberContact: member.contactNumber,
+            newMemberLevel: member.level,
+            newMemberRole: member.roleName,
+            newMemberInviteCode: member.inviteCode || null,
+            placedUnder: parentMember.name,
+            placedUnderId: parentMember._id,
+        });
 
         res.status(201).json({
             success: true,
@@ -232,18 +278,21 @@ module.exports.adminLookupInvite = async (req, res) => {
             return res.status(403).json({ success: false, message: 'This invite code belongs to a deactivated account.' });
         }
 
-        // Validate the looked-up parent is in the caller's subtree
+        // Directors (L7) can look up any invite code in the database.
+        // Managers (L6) can only look up codes belonging to themselves or their subtree.
         const callerId = (req.user.id || req.user._id).toString();
-        const parentId = parent._id.toString();
-        if (parentId !== callerId) {
-            const isInSubtree = parent.ancestorIds?.some(
-                (id) => id.toString() === callerId
-            );
-            if (!isInSubtree) {
-                return res.status(403).json({
-                    success: false,
-                    message: 'This member is not in your hierarchy.',
-                });
+        if (callerLevel < 7) {
+            const parentId = parent._id.toString();
+            if (parentId !== callerId) {
+                const isInSubtree = parent.ancestorIds?.some(
+                    (id) => id.toString() === callerId
+                );
+                if (!isInSubtree) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'This member is not in your hierarchy.',
+                    });
+                }
             }
         }
 
@@ -302,6 +351,13 @@ module.exports.changePassword = async (req, res) => {
         // Store password in plain text (no hashing)
         target.password = newPassword;
         await target.save();
+
+        // ── Audit log ───────────────────────────────────────────────────────
+        logAction(req, 'change_password', target._id, target.name, {
+            memberName: target.name,
+            memberLevel: target.level,
+            memberRole: target.roleName,
+        });
 
         res.json({
             success: true,
@@ -364,6 +420,7 @@ module.exports.changeMemberLevel = async (req, res) => {
             return res.status(403).json({ success: false, message: 'You can only change the level of your subordinates.' });
         }
 
+        const oldLevel = target.level;
         const targetLevel = Number(newLevel);
         target.level = targetLevel;
         target.roleName = LEVEL_TO_ROLE[targetLevel];
@@ -374,6 +431,15 @@ module.exports.changeMemberLevel = async (req, res) => {
         }
 
         await target.save();
+
+        // ── Audit log ───────────────────────────────────────────────────────
+        logAction(req, 'change_level', target._id, target.name, {
+            memberName: target.name,
+            oldLevel,
+            oldRole: LEVEL_TO_ROLE[oldLevel],
+            newLevel: targetLevel,
+            newRole: LEVEL_TO_ROLE[targetLevel],
+        });
 
         res.json({
             success: true,
@@ -784,7 +850,7 @@ module.exports.setPrice = async (req, res) => {
             { upsert: true, new: true }
         );
 
-        // Save price change audit log
+        // Save price change audit log (product-pricing-specific)
         const ProductPricingAudit = require('../models/ProductPricingAudit.model');
         await ProductPricingAudit.create({
             productId,
@@ -793,6 +859,14 @@ module.exports.setPrice = async (req, res) => {
             newPrice: retailPrice,
             changedBy: directorId,
             changeType: 'direct_override',
+        });
+
+        // ── General audit log ────────────────────────────────────────────────
+        logAction(req, 'set_price', memberId, null, {
+            productId,
+            memberId,
+            oldPrice,
+            newPrice: retailPrice,
         });
 
         res.json({ success: true, message: `Price updated successfully.`, pricing: result });
@@ -908,7 +982,7 @@ module.exports.updatePriceRequest = async (req, res) => {
                 { upsert: true }
             );
 
-            // Log approved price request in audit logs
+            // Log approved price request in product-pricing audit logs
             const ProductPricingAudit = require('../models/ProductPricingAudit.model');
             await ProductPricingAudit.create({
                 productId: request.productId,
@@ -919,6 +993,16 @@ module.exports.updatePriceRequest = async (req, res) => {
                 changeType: 'request_approval',
             });
         }
+
+        // ── General audit log ────────────────────────────────────────────────
+        logAction(req, status === 'approved' ? 'approve_price' : 'reject_price', request.targetMemberId, null, {
+            requestId,
+            productId: request.productId,
+            targetMemberId: request.targetMemberId,
+            oldPrice: request.currentPrice,
+            newPrice: request.requestedPrice,
+            decision: status,
+        });
 
         // Emit live event so Managers see approval/rejection immediately
         try { getIo().emit('priceRequestUpdated', { requestId, status }); } catch (_) {}
@@ -953,6 +1037,69 @@ module.exports.getPricingAuditLogs = async (req, res) => {
             .lean();
 
         res.json({ success: true, logs });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * GET /api/hierarchy/audit-logs
+ * Returns paginated audit log entries. Directors (L7) only.
+ *
+ * Query params:
+ *   page      {number}  — 1-based page number (default: 1)
+ *   limit     {number}  — entries per page (default: 50, max: 100)
+ *   action    {string}  — filter by action type (optional)
+ *   fromDate  {string}  — ISO date, filter entries from this date (optional)
+ *   toDate    {string}  — ISO date, filter entries up to this date (optional)
+ *   memberId  {string}  — filter entries where performedBy OR targetMember = memberId (optional)
+ */
+module.exports.getAuditLogs = async (req, res) => {
+    try {
+        const memberLevel = req.user.level ?? 1;
+        if (memberLevel < 7) {
+            return res.status(403).json({ success: false, message: 'Only Directors can view audit logs.' });
+        }
+
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+        const skip = (page - 1) * limit;
+
+        const filter = {};
+
+        if (req.query.action) {
+            filter.action = req.query.action;
+        }
+
+        if (req.query.fromDate || req.query.toDate) {
+            filter.createdAt = {};
+            if (req.query.fromDate) filter.createdAt.$gte = new Date(req.query.fromDate);
+            if (req.query.toDate)   filter.createdAt.$lte = new Date(req.query.toDate);
+        }
+
+        if (req.query.memberId) {
+            const mid = new mongoose.Types.ObjectId(req.query.memberId);
+            filter.$or = [{ performedBy: mid }, { targetMember: mid }];
+        }
+
+        const [logs, total] = await Promise.all([
+            AuditLog.find(filter)
+                .populate('performedBy', 'name level roleName')
+                .populate('targetMember', 'name level roleName')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            AuditLog.countDocuments(filter),
+        ]);
+
+        res.json({
+            success: true,
+            total,
+            page,
+            pages: Math.ceil(total / limit),
+            logs,
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
