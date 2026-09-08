@@ -1313,3 +1313,157 @@ module.exports.updateProfile = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// ─── Leaderboard ───────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/hierarchy/leaderboard
+ * Sales Leaderboard for Directors (L7) and Managers (L6).
+ * Ranks entities by sales volume (in money).
+ *
+ * CRITICAL ACCESS RULE:
+ * - Directors (L7): see actual sales numbers (totalSales, orderCount) in money.
+ * - Managers (L6): can see the leaderboard and rankings ONLY; sales numbers
+ *   (totalSales, orderCount) are strictly omitted (null) for security and privacy.
+ */
+module.exports.getLeaderboard = async (req, res) => {
+    try {
+        const callerLevel = req.user.level ?? 1;
+        if (callerLevel < 6) {
+            return res.status(403).json({ success: false, message: 'Leaderboard is only accessible to Directors and Managers.' });
+        }
+
+        const isDirector = callerLevel >= 7;
+        const { type = 'managers', duration = 'monthly' } = req.query;
+
+        // Build date filter based on duration
+        let dateFilter = {};
+        if (duration !== 'all_time') {
+            const { start, end } = getPeriodBounds(duration);
+            dateFilter = { createdAt: { $gte: start, $lt: end } };
+        }
+
+        let rankedList = [];
+
+        if (type === 'managers') {
+            // Rank all active Level 6 Managers by their total team sales
+            const managers = await HierarchyMember.find({ level: 6, isActive: true })
+                .select('name contactNumber level roleName shopName')
+                .lean();
+
+            rankedList = await Promise.all(
+                managers.map(async (manager) => {
+                    const descendants = await HierarchyMember.find(
+                        { ancestorIds: manager._id },
+                        '_id'
+                    ).lean();
+                    const allUserIds = [manager._id, ...descendants.map((d) => d._id)];
+
+                    const orderMatch = {
+                        userId: { $in: allUserIds },
+                        status: { $ne: 'cancelled' },
+                        ...dateFilter,
+                    };
+
+                    const salesAgg = await CartOrder.aggregate([
+                        { $match: orderMatch },
+                        {
+                            $group: {
+                                _id: null,
+                                totalSales: { $sum: '$totalAmount' },
+                                orderCount: { $sum: 1 },
+                            },
+                        },
+                    ]);
+
+                    return {
+                        _id: manager._id,
+                        name: manager.name,
+                        contactNumber: manager.contactNumber,
+                        level: manager.level,
+                        roleName: manager.roleName,
+                        shopName: manager.shopName || '',
+                        teamSize: descendants.length,
+                        totalSales: salesAgg[0]?.totalSales ?? 0,
+                        orderCount: salesAgg[0]?.orderCount ?? 0,
+                    };
+                })
+            );
+        } else {
+            // Rank individual buyers / members by sales
+            const orderMatch = {
+                status: { $ne: 'cancelled' },
+                ...dateFilter,
+            };
+
+            const memberSales = await CartOrder.aggregate([
+                { $match: orderMatch },
+                {
+                    $group: {
+                        _id: '$userId',
+                        totalSales: { $sum: '$totalAmount' },
+                        orderCount: { $sum: 1 },
+                    },
+                },
+                { $sort: { totalSales: -1 } },
+                { $limit: 50 },
+            ]);
+
+            const memberIds = memberSales.map((s) => s._id);
+            const members = await HierarchyMember.find({ _id: { $in: memberIds }, isActive: true })
+                .select('name contactNumber level roleName shopName')
+                .lean();
+
+            const memberMap = new Map(members.map((m) => [m._id.toString(), m]));
+
+            rankedList = memberSales
+                .filter((s) => memberMap.has(s._id.toString()))
+                .map((s) => {
+                    const m = memberMap.get(s._id.toString());
+                    return {
+                        _id: m._id,
+                        name: m.name,
+                        contactNumber: m.contactNumber,
+                        level: m.level,
+                        roleName: m.roleName,
+                        shopName: m.shopName || '',
+                        totalSales: s.totalSales,
+                        orderCount: s.orderCount,
+                    };
+                });
+        }
+
+        // Sort descending by totalSales, then by orderCount
+        rankedList.sort((a, b) => {
+            if (b.totalSales !== a.totalSales) {
+                return b.totalSales - a.totalSales;
+            }
+            return b.orderCount - a.orderCount;
+        });
+
+        // Strip numbers for non-directors (Managers get null)
+        const leaderboard = rankedList.map((item, index) => ({
+            rank: index + 1,
+            memberId: item._id,
+            name: item.name,
+            roleName: item.roleName,
+            level: item.level,
+            shopName: item.shopName,
+            teamSize: item.teamSize,
+            // Numbers are only exposed to Directors (L7)
+            totalSales: isDirector ? item.totalSales : null,
+            orderCount: isDirector ? item.orderCount : null,
+        }));
+
+        res.json({
+            success: true,
+            isDirector,
+            duration,
+            type,
+            leaderboard,
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+

@@ -28,6 +28,7 @@ const {
     searchMembers,
     getPricingAuditLogs,
     getAuditLogs,
+    getLeaderboard,
 } = require('../controllers/Hierarchy.controller');
 
 const router = express.Router();
@@ -73,6 +74,9 @@ router.get('/pricing/audit-logs', getPricingAuditLogs);
 
 // Audit Logs (Directors only — full system history)
 router.get('/audit-logs', getAuditLogs);
+
+// Leaderboard (Directors + Managers)
+router.get('/leaderboard', getLeaderboard);
 
 // Customer management
 router.get('/customers', getCustomers);
