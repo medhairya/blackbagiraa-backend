@@ -637,7 +637,7 @@ module.exports.getTeamOrders = async (req, res) => {
 
         if (search && search.trim()) {
             const q = search.trim().toUpperCase();
-            transformed = transformed.filter((order) => 
+            transformed = transformed.filter((order) =>
                 order.orderId.includes(q) ||
                 order.placedByName.toUpperCase().includes(q) ||
                 order.shopName.toUpperCase().includes(q) ||
@@ -903,7 +903,7 @@ module.exports.createPriceRequest = async (req, res) => {
         });
 
         // Emit live event so Directors see new requests immediately
-        try { getIo().emit('priceRequestCreated', priceRequest); } catch (_) {}
+        try { getIo().emit('priceRequestCreated', priceRequest); } catch (_) { }
 
         res.status(201).json({ success: true, message: 'Price change request submitted.', request: priceRequest });
     } catch (error) {
@@ -1005,7 +1005,7 @@ module.exports.updatePriceRequest = async (req, res) => {
         });
 
         // Emit live event so Managers see approval/rejection immediately
-        try { getIo().emit('priceRequestUpdated', { requestId, status }); } catch (_) {}
+        try { getIo().emit('priceRequestUpdated', { requestId, status }); } catch (_) { }
 
         res.json({ success: true, message: `Request ${status}` });
     } catch (error) {
@@ -1074,7 +1074,7 @@ module.exports.getAuditLogs = async (req, res) => {
         if (req.query.fromDate || req.query.toDate) {
             filter.createdAt = {};
             if (req.query.fromDate) filter.createdAt.$gte = new Date(req.query.fromDate);
-            if (req.query.toDate)   filter.createdAt.$lte = new Date(req.query.toDate);
+            if (req.query.toDate) filter.createdAt.$lte = new Date(req.query.toDate);
         }
 
         if (req.query.memberId) {
@@ -1441,7 +1441,7 @@ module.exports.getLeaderboard = async (req, res) => {
             return b.orderCount - a.orderCount;
         });
 
-        // All Level 6+ users see the full sales numbers
+        // Strip numbers for non-directors (Managers get null)
         const leaderboard = rankedList.map((item, index) => ({
             rank: index + 1,
             memberId: item._id?.toString() ?? String(index + 1),
@@ -1450,8 +1450,9 @@ module.exports.getLeaderboard = async (req, res) => {
             level: item.level,
             shopName: item.shopName,
             teamSize: item.teamSize ?? 0,
-            totalSales: item.totalSales,
-            orderCount: item.orderCount,
+            // Numbers are only exposed to Directors (L7)
+            totalSales: isDirector ? item.totalSales : null,
+            orderCount: isDirector ? item.orderCount : null,
         }));
 
         res.json({
