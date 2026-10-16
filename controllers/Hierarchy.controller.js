@@ -424,11 +424,7 @@ module.exports.changeMemberLevel = async (req, res) => {
         const targetLevel = Number(newLevel);
         target.level = targetLevel;
         target.roleName = LEVEL_TO_ROLE[targetLevel];
-
-        // For level 1 — remove invite code (leaf node)
-        if (targetLevel === 1) {
-            target.inviteCode = undefined;
-        }
+        // Invite code is kept as-is on level changes — codes are permanent.
 
         await target.save();
 
@@ -1294,20 +1290,17 @@ module.exports.updateProfile = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Member not found' });
         }
 
+        // Invite codes are permanent once generated — nobody can change them.
+        // Sending the same code back unchanged (older app versions do) is fine.
+        if (inviteCode && inviteCode.trim().toUpperCase() !== member.inviteCode) {
+            return res.status(403).json({
+                success: false,
+                message: 'Invite code cannot be changed once it has been generated.',
+            });
+        }
+
         if (name) member.name = name;
         if (shopName) member.shopName = shopName;
-
-        // Allow levels 2 to 6 to update inviteCode
-        if (inviteCode && member.level >= 2 && member.level <= 6) {
-            const cleanCode = inviteCode.trim().toUpperCase();
-            if (cleanCode !== member.inviteCode) {
-                const exists = await HierarchyMember.exists({ inviteCode: cleanCode, _id: { $ne: memberId } });
-                if (exists) {
-                    return res.status(400).json({ success: false, message: 'This invite code is already taken. Please choose another one.' });
-                }
-                member.inviteCode = cleanCode;
-            }
-        }
 
         await member.save();
 

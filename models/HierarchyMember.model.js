@@ -103,7 +103,9 @@ hierarchyMemberSchema.pre('save', async function (next) {
     // No hashing is performed on new passwords.
 
     // Auto-generate invite code for levels 2+ that don't have one yet
-    if (this.isNew && this.level >= 2 && !this.inviteCode) {
+    // Also covers members promoted from Level 1, who were created without one.
+    // An existing code is never replaced.
+    if (this.level >= 2 && !this.inviteCode) {
         let code, exists;
         let attempts = 0;
         do {
