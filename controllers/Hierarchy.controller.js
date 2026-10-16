@@ -1246,99 +1246,372 @@ module.exports.getCustomerDetail = async (req, res) => {
 
 // ─── Reports ───────────────────────────────────────────────────────────────────
 
-module.exports.getReports = async (req, res) => {
-    try {
-        const memberId = req.user.id || req.user._id;
-        const memberLevel = req.user.level ?? 1;
-        const { period = 'monthly' } = req.query;
+// Dates below are built with local-time constructors; server.js pins process.env.TZ to
+// Asia/Kolkata, so "local" is IST everywhere in this section.
+const REPORT_TZ = 'Asia/Kolkata';
+const REPORT_PERIODS = ['daily', 'weekly', 'monthly'];
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const REPORT_GROUP_FORMAT = { daily: '%Y-%m-%d', weekly: '%G-%V', monthly: '%Y-%m' };
+const LEVEL_LABEL = { 7: 'Director', 6: 'Manager', 5: 'Super Stockist', 4: 'Sub SS', 3: 'Distributor', 2: 'Wholesaler', 1: 'Retailer' };
 
-        const descendantIds = await getDescendantIds(memberId, memberLevel);
-        const allIds = [new mongoose.Types.ObjectId(memberId), ...descendantIds];
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-        const now = new Date();
-        let dateFormat, periodStart, previousStart;
+/** Monday 00:00 of the week containing `d` (weeks run Monday–Sunday). */
+function startOfWeekMonday(d) {
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    return addDays(day, -((day.getDay() + 6) % 7));
+}
 
-        switch (period) {
-            case 'daily':
-                periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-                previousStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14);
-                dateFormat = '%Y-%m-%d';
-                break;
-            case 'weekly':
-                periodStart = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
-                previousStart = new Date(now.getFullYear(), now.getMonth() - 2, now.getDate());
-                // %G = ISO week-numbering year, so late-December weeks get the right year
-                dateFormat = '%G-W%V';
-                break;
-            case 'monthly':
-            default:
-                periodStart = new Date(now.getFullYear(), now.getMonth() - 6, 1);
-                previousStart = new Date(now.getFullYear(), now.getMonth() - 12, 1);
-                dateFormat = '%Y-%m';
-                break;
+/** Monday of ISO week `week` in ISO week-numbering year `year`. */
+function isoWeekMonday(year, week) {
+    return addDays(startOfWeekMonday(new Date(year, 0, 4)), (week - 1) * 7);
+}
+
+/**
+ * Whole-bucket ranges ending with the current day/week/month:
+ * daily = last 7 days, weekly = last 5 Monday-start weeks, monthly = last 6 months.
+ * The previous range is the same length immediately before.
+ */
+function reportRanges(period, now = new Date()) {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    switch (period) {
+        case 'daily': {
+            const start = addDays(today, -6);
+            return { start, end: addDays(today, 1), previousStart: addDays(start, -7) };
         }
+        case 'weekly': {
+            const start = addDays(startOfWeekMonday(today), -28);
+            return { start, end: addDays(start, 35), previousStart: addDays(start, -35) };
+        }
+        case 'monthly':
+        default:
+            return {
+                start: new Date(today.getFullYear(), today.getMonth() - 5, 1),
+                end: new Date(today.getFullYear(), today.getMonth() + 1, 1),
+                previousStart: new Date(today.getFullYear(), today.getMonth() - 11, 1),
+            };
+    }
+}
 
-        const [entries, previousRevenue] = await Promise.all([
-            CartOrder.aggregate([
-                {
-                    $match: {
-                        userId: { $in: allIds },
-                        status: { $ne: 'cancelled' },
-                        createdAt: { $gte: periodStart },
-                    },
-                },
-                {
-                    // Units = boxes ordered: sum of `quantity` over the order's items
-                    // (items is stored as an object keyed by product id)
-                    $addFields: {
-                        units: {
-                            $sum: {
-                                $map: {
-                                    input: { $objectToArray: { $ifNull: ['$items', {}] } },
-                                    as: 'i',
-                                    in: { $ifNull: ['$$i.v.quantity', 0] },
-                                },
+/**
+ * Human label for a grouping key:
+ *   daily   "2026-10-16" → "16 Oct"
+ *   weekly  "2026-41"    → "Oct, W1"  (week belongs to the month of its Monday;
+ *                                      W1 = first week whose Monday is in that month)
+ *   monthly "2026-10"    → "Oct, 26"
+ */
+function labelFor(period, key) {
+    const [a, b, c] = key.split('-').map(Number);
+    if (period === 'daily') {
+        const day = new Date(a, b - 1, c);
+        return { label: `${c} ${SHORT_MONTHS[b - 1]}`, from: ymd(day), to: ymd(day) };
+    }
+    if (period === 'weekly') {
+        const monday = isoWeekMonday(a, b);
+        return {
+            label: `${SHORT_MONTHS[monday.getMonth()]}, W${Math.ceil(monday.getDate() / 7)}`,
+            from: ymd(monday),
+            to: ymd(addDays(monday, 6)),
+        };
+    }
+    return {
+        label: `${SHORT_MONTHS[b - 1]}, ${String(a).slice(-2)}`,
+        from: ymd(new Date(a, b - 1, 1)),
+        to: ymd(new Date(a, b, 0)),
+    };
+}
+
+/** Sales report for a member's scope (themselves + everyone below; Directors see all). */
+async function buildSalesReport(memberId, memberLevel, requestedPeriod) {
+    const period = REPORT_PERIODS.includes(requestedPeriod) ? requestedPeriod : 'monthly';
+    const descendantIds = await getDescendantIds(memberId, memberLevel);
+    const userIds = memberLevel >= 7
+        ? descendantIds
+        : [new mongoose.Types.ObjectId(memberId), ...descendantIds];
+    const { start, end, previousStart } = reportRanges(period);
+
+    const [grouped, previousRevenue] = await Promise.all([
+        CartOrder.aggregate([
+            { $match: { userId: { $in: userIds }, status: { $ne: 'cancelled' }, createdAt: { $gte: start, $lt: end } } },
+            {
+                // Units = boxes ordered: sum of `quantity` over the order's items
+                // (items is stored as an object keyed by product id)
+                $addFields: {
+                    units: {
+                        $sum: {
+                            $map: {
+                                input: { $objectToArray: { $ifNull: ['$items', {}] } },
+                                as: 'i',
+                                in: { $ifNull: ['$$i.v.quantity', 0] },
                             },
                         },
                     },
                 },
-                {
-                    $group: {
-                        _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: 'Asia/Kolkata' } },
-                        revenue: { $sum: '$totalAmount' },
-                        orderCount: { $sum: 1 },
-                        unitsSold: { $sum: '$units' },
-                    },
+            },
+            {
+                $group: {
+                    _id: { $dateToString: { format: REPORT_GROUP_FORMAT[period], date: '$createdAt', timezone: REPORT_TZ } },
+                    revenue: { $sum: '$totalAmount' },
+                    orderCount: { $sum: 1 },
+                    unitsSold: { $sum: '$units' },
                 },
-                { $sort: { _id: 1 } },
-            ]),
-            CartOrder.aggregate([
-                {
-                    $match: {
-                        userId: { $in: allIds },
-                        status: { $ne: 'cancelled' },
-                        createdAt: { $gte: previousStart, $lt: periodStart },
-                    },
-                },
-                { $group: { _id: null, total: { $sum: '$totalAmount' } } },
-            ]),
+            },
+            { $sort: { _id: 1 } },
+        ]),
+        CartOrder.aggregate([
+            { $match: { userId: { $in: userIds }, status: { $ne: 'cancelled' }, createdAt: { $gte: previousStart, $lt: start } } },
+            { $group: { _id: null, total: { $sum: '$totalAmount' } } },
+        ]),
+    ]);
+
+    const entries = grouped.map((e) => {
+        const { label, from, to } = labelFor(period, e._id);
+        return { period: label, from, to, revenue: e.revenue, orderCount: e.orderCount, unitsSold: e.unitsSold };
+    });
+
+    return {
+        period,
+        range: { start, end },
+        userIds,
+        entries,
+        totalRevenue: entries.reduce((sum, e) => sum + e.revenue, 0),
+        totalOrders: entries.reduce((sum, e) => sum + e.orderCount, 0),
+        totalUnits: entries.reduce((sum, e) => sum + e.unitsSold, 0),
+        previousPeriodRevenue: previousRevenue[0]?.total ?? 0,
+    };
+}
+
+module.exports.getReports = async (req, res) => {
+    try {
+        const memberId = req.user.id || req.user._id;
+        const memberLevel = req.user.level ?? 1;
+        const r = await buildSalesReport(memberId, memberLevel, req.query.period);
+
+        res.json({
+            success: true,
+            report: {
+                period: r.period,
+                from: ymd(r.range.start),
+                to: ymd(addDays(r.range.end, -1)),
+                entries: r.entries,
+                totalRevenue: r.totalRevenue,
+                totalOrders: r.totalOrders,
+                totalUnits: r.totalUnits,
+                previousPeriodRevenue: r.previousPeriodRevenue,
+            },
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * GET /api/hierarchy/reports/export?period=daily|weekly|monthly
+ * Excel workbook of the caller's sales report — Directors (L7) and Managers (L6) only.
+ * Sheets: Summary, Breakdown, Orders (every order incl. cancelled), Order Items.
+ */
+module.exports.exportSalesReport = async (req, res) => {
+    try {
+        const memberLevel = req.user.level ?? 1;
+        if (memberLevel < 6) {
+            return res.status(403).json({ success: false, message: 'Only Directors and Managers can download reports.' });
+        }
+
+        const ExcelJS = require('exceljs');
+        const memberId = req.user.id || req.user._id;
+        const report = await buildSalesReport(memberId, memberLevel, req.query.period);
+        const { start, end } = report.range;
+
+        const [me, orders] = await Promise.all([
+            HierarchyMember.findById(memberId).select('name level').lean(),
+            CartOrder.find({ userId: { $in: report.userIds }, createdAt: { $gte: start, $lt: end } })
+                .sort({ createdAt: 1 })
+                // Orders' `userId` ref still says the legacy 'User' model; buyers are HierarchyMembers
+                .populate({ path: 'userId', model: HierarchyMember, select: 'name shopName level contactNumber gstNumber address parentId' })
+                .lean(),
         ]);
 
-        const report = {
-            period,
-            entries: entries.map((e) => ({
-                period: e._id,
-                revenue: e.revenue,
-                orderCount: e.orderCount,
-                unitsSold: e.unitsSold,
-            })),
-            totalRevenue: entries.reduce((sum, e) => sum + e.revenue, 0),
-            totalOrders: entries.reduce((sum, e) => sum + e.orderCount, 0),
-            totalUnits: entries.reduce((sum, e) => sum + e.unitsSold, 0),
-            previousPeriodRevenue: previousRevenue[0]?.total ?? 0,
+        // Names of each buyer's parent ("placed under"), in one query
+        const parentIds = [...new Set(orders.map((o) => o.userId?.parentId?.toString()).filter(Boolean))];
+        const parents = await HierarchyMember.find({ _id: { $in: parentIds } }, 'name').lean();
+        const parentName = new Map(parents.map((p) => [p._id.toString(), p.name]));
+
+        // exceljs writes Dates as UTC; shift so Excel shows IST wall-clock time
+        const ist = (d) => new Date(new Date(d).getTime() + 330 * 60 * 1000);
+        const fromDate = start;
+        const toDate = addDays(end, -1);
+        const RUPEE = '"₹"#,##0.00';
+
+        const cancelled = orders.filter((o) => o.status === 'cancelled');
+        const cancelledValue = cancelled.reduce((s, o) => s + (o.totalAmount || 0), 0);
+        const prev = report.previousPeriodRevenue;
+        const periodName = report.period.charAt(0).toUpperCase() + report.period.slice(1);
+
+        const wb = new ExcelJS.Workbook();
+        wb.creator = 'Black Bagiraa';
+        wb.created = new Date();
+
+        const styleHeader = (ws) => {
+            const header = ws.getRow(1);
+            header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF16A34A' } };
+            header.alignment = { vertical: 'middle' };
+            ws.views = [{ state: 'frozen', ySplit: 1 }];
+        };
+        const addTable = (name, columns, rows) => {
+            const ws = wb.addWorksheet(name);
+            ws.columns = columns;
+            ws.addRows(rows);
+            styleHeader(ws);
+            if (rows.length > 0) {
+                ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+            }
+            return ws;
         };
 
-        res.json({ success: true, report });
+        // ── Summary ───────────────────────────────────────────────────────────
+        const summary = wb.addWorksheet('Summary');
+        summary.columns = [
+            { header: 'Item', key: 'k', width: 34 },
+            { header: 'Value', key: 'v', width: 32 },
+        ];
+        const summaryRows = [
+            ['Generated for', `${me?.name ?? 'Unknown'} (${LEVEL_LABEL[me?.level] ?? `Level ${me?.level}`})`],
+            ['Generated at (IST)', ist(new Date())],
+            ['Report type', periodName],
+            ['From', ist(fromDate)],
+            ['To', ist(toDate)],
+            ['Total revenue (excl. cancelled)', report.totalRevenue],
+            ['Orders (excl. cancelled)', report.totalOrders],
+            ['Boxes sold (excl. cancelled)', report.totalUnits],
+            ['Average order value', report.totalOrders > 0 ? report.totalRevenue / report.totalOrders : 0],
+            ['Cancelled orders', cancelled.length],
+            ['Cancelled order value', cancelledValue],
+            ['Previous period revenue', prev],
+            ['Change vs previous period', prev > 0 ? (report.totalRevenue - prev) / prev : 'n/a'],
+        ];
+        summary.addRows(summaryRows.map(([k, v]) => ({ k, v })));
+        styleHeader(summary);
+        summary.getColumn('k').font = { bold: true };
+        summary.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        summary.getCell('B3').numFmt = 'dd-mmm-yyyy hh:mm AM/PM';
+        summary.getCell('B5').numFmt = 'dd-mmm-yyyy';
+        summary.getCell('B6').numFmt = 'dd-mmm-yyyy';
+        ['B7', 'B10', 'B12', 'B13'].forEach((c) => { summary.getCell(c).numFmt = RUPEE; });
+        if (prev > 0) summary.getCell('B14').numFmt = '0.0%';
+        summary.getColumn('v').alignment = { horizontal: 'left' };
+
+        // ── Breakdown (same rows as the screen) ───────────────────────────────
+        const parseYmd = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+        addTable('Breakdown', [
+            { header: periodName === 'Daily' ? 'Date' : periodName === 'Weekly' ? 'Week' : 'Month', key: 'label', width: 14 },
+            { header: 'From', key: 'from', width: 14, style: { numFmt: 'dd-mmm-yyyy' } },
+            { header: 'To', key: 'to', width: 14, style: { numFmt: 'dd-mmm-yyyy' } },
+            { header: 'Revenue', key: 'revenue', width: 16, style: { numFmt: RUPEE } },
+            { header: 'Orders', key: 'orders', width: 10 },
+            { header: 'Boxes', key: 'boxes', width: 10 },
+            { header: 'Avg order value', key: 'avg', width: 16, style: { numFmt: RUPEE } },
+        ], report.entries.map((e) => ({
+            label: e.period,
+            from: ist(parseYmd(e.from)),
+            to: ist(parseYmd(e.to)),
+            revenue: e.revenue,
+            orders: e.orderCount,
+            boxes: e.unitsSold,
+            avg: e.orderCount > 0 ? e.revenue / e.orderCount : 0,
+        })));
+
+        // ── Orders + Order Items ──────────────────────────────────────────────
+        const orderRows = [];
+        const itemRows = [];
+        for (const o of orders) {
+            const buyer = o.userId && typeof o.userId === 'object' ? o.userId : null;
+            const items = Object.values(o.items || {});
+            const orderId = o._id.toString().slice(-8).toUpperCase();
+            const when = ist(o.createdAt);
+            const buyerName = buyer?.name ?? o.shippingAddress?.customerName ?? 'Unknown';
+            const shop = buyer?.shopName || o.shippingAddress?.shopName || '';
+
+            orderRows.push({
+                id: orderId,
+                date: when,
+                time: when,
+                buyer: buyerName,
+                shop,
+                level: buyer ? (LEVEL_LABEL[buyer.level] ?? `Level ${buyer.level}`) : '',
+                phone: buyer?.contactNumber ?? '',
+                gst: buyer?.gstNumber ?? '',
+                city: buyer?.address?.city || o.shippingAddress?.city || '',
+                parent: buyer?.parentId ? (parentName.get(buyer.parentId.toString()) ?? '') : '',
+                status: o.status,
+                payment: o.paymentStatus,
+                method: o.paymentMethod,
+                boxes: items.reduce((s, i) => s + (i.quantity || 0), 0),
+                total: o.totalAmount,
+            });
+
+            for (const i of items) {
+                const boxSize = i.boxQuantity || 1;
+                itemRows.push({
+                    id: orderId,
+                    date: when,
+                    buyer: buyerName,
+                    shop,
+                    product: i.name,
+                    category: i.category,
+                    boxes: i.quantity,
+                    boxSize,
+                    pieces: (i.quantity || 0) * boxSize,
+                    pricePiece: i.retailPrice,
+                    priceBox: (i.retailPrice || 0) * boxSize,
+                    lineTotal: (i.retailPrice || 0) * boxSize * (i.quantity || 0),
+                    mrp: i.MRP,
+                    status: o.status,
+                });
+            }
+        }
+
+        addTable('Orders', [
+            { header: 'Order ID', key: 'id', width: 12 },
+            { header: 'Date', key: 'date', width: 13, style: { numFmt: 'dd-mmm-yyyy' } },
+            { header: 'Time', key: 'time', width: 10, style: { numFmt: 'hh:mm AM/PM' } },
+            { header: 'Buyer', key: 'buyer', width: 22 },
+            { header: 'Shop', key: 'shop', width: 22 },
+            { header: 'Level', key: 'level', width: 14 },
+            { header: 'Phone', key: 'phone', width: 13 },
+            { header: 'GST', key: 'gst', width: 17 },
+            { header: 'City', key: 'city', width: 14 },
+            { header: 'Placed under', key: 'parent', width: 20 },
+            { header: 'Status', key: 'status', width: 12 },
+            { header: 'Payment status', key: 'payment', width: 15 },
+            { header: 'Payment method', key: 'method', width: 16 },
+            { header: 'Boxes', key: 'boxes', width: 8 },
+            { header: 'Total', key: 'total', width: 14, style: { numFmt: RUPEE } },
+        ], orderRows);
+
+        addTable('Order Items', [
+            { header: 'Order ID', key: 'id', width: 12 },
+            { header: 'Date', key: 'date', width: 13, style: { numFmt: 'dd-mmm-yyyy' } },
+            { header: 'Buyer', key: 'buyer', width: 22 },
+            { header: 'Shop', key: 'shop', width: 22 },
+            { header: 'Product', key: 'product', width: 26 },
+            { header: 'Category', key: 'category', width: 16 },
+            { header: 'Boxes', key: 'boxes', width: 8 },
+            { header: 'Box size', key: 'boxSize', width: 9 },
+            { header: 'Pieces', key: 'pieces', width: 9 },
+            { header: 'Price / piece', key: 'pricePiece', width: 13, style: { numFmt: RUPEE } },
+            { header: 'Price / box', key: 'priceBox', width: 13, style: { numFmt: RUPEE } },
+            { header: 'Line total', key: 'lineTotal', width: 14, style: { numFmt: RUPEE } },
+            { header: 'MRP', key: 'mrp', width: 10, style: { numFmt: RUPEE } },
+            { header: 'Order status', key: 'status', width: 13 },
+        ], itemRows);
+
+        const buffer = await wb.xlsx.writeBuffer();
+        const fileName = `Sales-Report_${periodName}_${ymd(new Date())}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.send(Buffer.from(buffer));
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

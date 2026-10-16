@@ -16,6 +16,7 @@ const {
     createCustomer,
     getCustomerDetail,
     getReports,
+    exportSalesReport,
     updateProfile,
     adminAddMember,
     adminLookupInvite,
@@ -85,6 +86,7 @@ router.get('/customers/:customerId', getCustomerDetail);
 
 // Reports
 router.get('/reports', getReports);
+router.get('/reports/export', exportSalesReport);             // L6+: Excel download
 
 // Profile
 router.put('/profile', updateProfile);
