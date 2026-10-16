@@ -1,16 +1,17 @@
 const express = require('express');
 const authMiddleware = require('../middlewares/authMiddleware');
-const { requireRole } = require('../middlewares/roleHelpers');
+const { requireRoleOrLevel } = require('../middlewares/roleHelpers');
 const { getCategories, addCategory, deleteCategory, updateCategory } = require('../controllers/Categories.controller');
 const router = express.Router();
 const { getUploader } = require('../utils/uplode');
 const uploader = getUploader('categoryImage');
 
-const staffOnly = [authMiddleware, requireRole('main_admin', 'super_stockist')];
+// Catalog management: legacy staff roles or Directors (level 7)
+const catalogManagers = [authMiddleware, requireRoleOrLevel(['main_admin', 'super_stockist'], 7)];
 
 router.get('/get-categories', authMiddleware, getCategories);
-router.post('/add-category', ...staffOnly, uploader, addCategory);
-router.delete('/delete-category/:id', ...staffOnly, deleteCategory);
-router.put('/update-category', ...staffOnly, uploader, updateCategory);
+router.post('/add-category', ...catalogManagers, uploader, addCategory);
+router.delete('/delete-category/:id', ...catalogManagers, deleteCategory);
+router.put('/update-category', ...catalogManagers, uploader, updateCategory);
 
 module.exports = router;

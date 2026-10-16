@@ -82,6 +82,22 @@ function requireMaxLevel(maxLevel) {
     };
 }
 
+/**
+ * Allow legacy staff roles (main_admin / super_stockist) OR any HierarchyMember at
+ * `minLevel` or above. Used for catalog management so new-system Directors (L7),
+ * whose tokens carry `level` but no `role`, can manage products and categories.
+ */
+function requireRoleOrLevel(roles, minLevel) {
+    return (req, res, next) => {
+        if (req.user?.role && roles.includes(req.user.role)) return next();
+        if ((req.user?.level ?? 0) >= minLevel) return next();
+        return res.status(403).json({
+            success: false,
+            message: 'Forbidden: insufficient permissions',
+        });
+    };
+}
+
 async function assertOrderInScope(req, order) {
     if (!order) {
         return false;
@@ -112,5 +128,6 @@ module.exports = {
     getDistributorScope,
     requireRole,
     requireMaxLevel,
+    requireRoleOrLevel,
     assertOrderInScope,
 };

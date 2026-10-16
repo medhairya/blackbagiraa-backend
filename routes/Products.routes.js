@@ -19,12 +19,14 @@ const {
     productImage,
 } = require('../controllers/Products.controller');
 const authMiddleware = require('../middlewares/authMiddleware');
-const { requireRole, requireMaxLevel } = require('../middlewares/roleHelpers');
+const { requireRole, requireMaxLevel, requireRoleOrLevel } = require('../middlewares/roleHelpers');
 
 const { getUploader } = require('../utils/uplode');
 const uploder = getUploader('productImg');
 
 const staffOnly = [authMiddleware, requireRole('main_admin', 'super_stockist')];
+// Catalog management: legacy staff roles or Directors (level 7)
+const catalogManagers = [authMiddleware, requireRoleOrLevel(['main_admin', 'super_stockist'], 7)];
 // Ordering routes: all authenticated members can access (supervisors use onBehalfOf)
 const orderingAccess = [authMiddleware];
 
@@ -44,8 +46,8 @@ router.put('/admin/updatePaymentStatus/:orderId', ...staffOnly, adminUpdatePayme
 router.get('/admin/fetchStatsData', ...staffOnly, adminFetchStatsData);
 router.get('/admin/fetchMonthlySalesData', ...staffOnly, adminFetchMonthlySalesData);
 router.get('/admin/fetchOrderStatusData', ...staffOnly, adminFetchOrderStatusData);
-router.post('/admin/add-product', ...staffOnly, uploder, adminAddProduct);
-router.delete('/admin/delete-product/:productId', ...staffOnly, adminDeleteProduct);
-router.put('/admin/update-product', ...staffOnly, uploder, adminUpdateProduct);
+router.post('/admin/add-product', ...catalogManagers, uploder, adminAddProduct);
+router.delete('/admin/delete-product/:productId', ...catalogManagers, adminDeleteProduct);
+router.put('/admin/update-product', ...catalogManagers, uploder, adminUpdateProduct);
 
 module.exports = router;
