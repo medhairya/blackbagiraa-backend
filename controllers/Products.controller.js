@@ -8,6 +8,57 @@ const { getIo } = require('../socket');
 const Category = require('../models/Category');
 const { bufferToBase64 } = require('../utils/uplode');
 const { getOrderScope, getDistributorScope, assertOrderInScope } = require('../middlewares/roleHelpers');
+const crypto = require('crypto');
+
+/** Short fingerprint of a photo — changes whenever the photo changes. */
+function imageVersion(image) {
+    return crypto.createHash('md5').update(image || '').digest('hex').slice(0, 10);
+}
+
+/**
+ * With `?images=url` (sent by the mobile app), replace an embedded base64 photo with a
+ * short, versioned address. The phone downloads that address once and keeps it on disk;
+ * a new photo gets a new `v=`, so phones fetch it again automatically.
+ * Without the flag the product is returned unchanged (the website renders base64 directly).
+ */
+function withImageUrl(req, product) {
+    if (req.query.images !== 'url' || typeof product?.image !== 'string' || !product.image.startsWith('data:')) {
+        return product;
+    }
+    return { ...product, image: `api/products/image/${product._id}?v=${imageVersion(product.image)}` };
+}
+
+/**
+ * GET /api/products/image/:productId — public; serves one product photo as a real image file.
+ * Cached for a year by phones and browsers; the `v=` in the URL changes when the photo does.
+ */
+module.exports.productImage = async (req, res) => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.productId)) return res.status(404).end();
+        const product = await Product.findById(req.params.productId).select('image').lean();
+        const image = product?.image;
+        if (!image) return res.status(404).end();
+
+        if (!image.startsWith('data:')) {
+            // Older records may hold a web link or a file path served from /images
+            return res.redirect(image.startsWith('http') ? image : `/${image.replace(/\\/g, '/').replace(/^\//, '')}`);
+        }
+
+        // "data:image/png;base64,<data>"
+        const comma = image.indexOf(',');
+        const [mimeType, encoding] = image.slice(5, comma).split(';');
+        if (comma < 0 || encoding !== 'base64' || !mimeType.startsWith('image/')) return res.status(404).end();
+
+        const etag = `"${imageVersion(image)}"`;
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('ETag', etag);
+        if (req.headers['if-none-match'] === etag) return res.status(304).end();
+        res.type(mimeType).send(Buffer.from(image.slice(comma + 1), 'base64'));
+    } catch (error) {
+        console.log('productImage error:', error);
+        res.status(500).end();
+    }
+};
 
 module.exports.fetchProducts = async (req, res) => {
     try {
@@ -56,7 +107,7 @@ module.exports.fetchProducts = async (req, res) => {
                     if (resolvedPrice !== undefined) {
                         obj.retailPrice = resolvedPrice;
                     }
-                    return obj;
+                    return withImageUrl(req, obj);
                 });
                 return res.status(200).json({ success: true, products: productsWithPrice });
             } catch (pricingErr) {
@@ -64,7 +115,10 @@ module.exports.fetchProducts = async (req, res) => {
             }
         }
 
-        res.status(200).json({ success: true, products });
+        res.status(200).json({
+            success: true,
+            products: req.query.images === 'url' ? products.map((p) => withImageUrl(req, p.toObject())) : products,
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: "Internal server error" });
     }
@@ -139,7 +193,7 @@ module.exports.fetchCart = async (req, res) => {
             const product = await Product.findById(cartItem.productId);
             if (product) {
                 populatedItems[key] = {
-                    ...product.toObject(),
+                    ...withImageUrl(req, product.toObject()),
                     quantity: cartItem.quantity
                 };
             }

@@ -16,6 +16,7 @@ const {
     adminAddProduct,
     adminDeleteProduct,
     adminUpdateProduct,
+    productImage,
 } = require('../controllers/Products.controller');
 const authMiddleware = require('../middlewares/authMiddleware');
 const { requireRole, requireMaxLevel } = require('../middlewares/roleHelpers');
@@ -27,6 +28,8 @@ const staffOnly = [authMiddleware, requireRole('main_admin', 'super_stockist')];
 // Ordering routes: all authenticated members can access (supervisors use onBehalfOf)
 const orderingAccess = [authMiddleware];
 
+// Public: one product photo as an image file (cached on phones; see productImage)
+router.get('/image/:productId', productImage);
 router.get('/fetchProducts', authMiddleware, fetchProducts);
 router.post('/saveCart', ...orderingAccess, saveCart);
 router.get('/fetchCart', ...orderingAccess, fetchCart);
