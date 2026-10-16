@@ -1358,7 +1358,7 @@ module.exports.getLeaderboard = async (req, res) => {
 
                     const orderMatch = {
                         userId: { $in: allUserIds },
-                        paymentStatus: 'paid',
+                        status: { $ne: 'cancelled' }, // every order counts unless cancelled
                         ...dateFilter,
                     };
 
@@ -1389,7 +1389,7 @@ module.exports.getLeaderboard = async (req, res) => {
         } else {
             // Rank individual buyers / members by sales
             const orderMatch = {
-                paymentStatus: 'paid',
+                status: { $ne: 'cancelled' }, // every order counts unless cancelled
                 ...dateFilter,
             };
 
