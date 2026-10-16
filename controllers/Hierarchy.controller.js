@@ -59,6 +59,68 @@ function getPeriodBounds(duration) {
     return { start, end };
 }
 
+/**
+ * The member plus everyone below them, at any depth. Unlike getDescendantIds,
+ * this never widens to "everyone" for Directors — it is strictly the subtree.
+ */
+async function getSubtreeIds(memberId) {
+    const id = new mongoose.Types.ObjectId(memberId);
+    const descendants = await HierarchyMember.find({ ancestorIds: id }, '_id').lean();
+    return [id, ...descendants.map((d) => d._id)];
+}
+
+/** Non-cancelled order count and revenue for a member and their whole sub-team. */
+async function getSubtreeOrderStats(memberId) {
+    const ids = await getSubtreeIds(memberId);
+    const agg = await CartOrder.aggregate([
+        { $match: { userId: { $in: ids }, status: { $ne: 'cancelled' } } },
+        { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$totalAmount' } } },
+    ]);
+    return { totalOrders: agg[0]?.totalOrders ?? 0, totalRevenue: agg[0]?.totalRevenue ?? 0 };
+}
+
+/**
+ * Recompute `achieved` for revenue/orders targets from delivered orders placed in the
+ * target's period by the assignee or anyone below them. This credits every level up to
+ * the Director, includes orders delivered before the target was created, and stays
+ * correct when an order's status changes back and forth. Changed values are written back.
+ * Visits targets keep their stored value (no visit tracking yet).
+ * Mutates and returns the given (lean) targets.
+ */
+async function computeTargetAchievement(targets) {
+    const subtreeCache = new Map();
+    const writes = [];
+
+    for (const t of targets) {
+        if (t.targetType !== 'revenue' && t.targetType !== 'orders') continue;
+
+        const assigneeId = String(t.assignedTo?._id ?? t.assignedTo);
+        if (!subtreeCache.has(assigneeId)) {
+            subtreeCache.set(assigneeId, await getSubtreeIds(assigneeId));
+        }
+
+        const agg = await CartOrder.aggregate([
+            {
+                $match: {
+                    userId: { $in: subtreeCache.get(assigneeId) },
+                    status: 'delivered',
+                    createdAt: { $gte: t.periodStart, $lt: t.periodEnd },
+                },
+            },
+            { $group: { _id: null, revenue: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
+        ]);
+
+        const achieved = t.targetType === 'revenue' ? (agg[0]?.revenue ?? 0) : (agg[0]?.count ?? 0);
+        if (achieved !== t.achieved) {
+            writes.push({ updateOne: { filter: { _id: t._id }, update: { $set: { achieved } } } });
+        }
+        t.achieved = achieved;
+    }
+
+    if (writes.length > 0) await Target.bulkWrite(writes);
+    return targets;
+}
+
 // ─── Level→RoleName mapping ────────────────────────────────────────────────────
 const LEVEL_TO_ROLE = {
     7: 'director',
@@ -454,30 +516,35 @@ module.exports.getDashboardStats = async (req, res) => {
         const memberId = req.user.id || req.user._id;
         const memberLevel = req.user.level ?? 1;
         const descendantIds = await getDescendantIds(memberId, memberLevel);
+        // Same set as Team Orders and Reports: the member's own orders + everyone below.
+        // (A Director's descendant list already contains every member, themselves included.)
+        const scopeIds = memberLevel >= 7
+            ? descendantIds
+            : [new mongoose.Types.ObjectId(memberId), ...descendantIds];
 
-        const [teamSize, totalOrders, revenueAgg, pendingOrders, activeTargets] = await Promise.all([
+        const now = new Date();
+        const activePeriod = { periodStart: { $lte: now }, periodEnd: { $gt: now } };
+
+        const [teamSize, totalOrders, revenueAgg, pendingOrders, activeTargets, myTargets] = await Promise.all([
             HierarchyMember.countDocuments({ parentId: memberId }),
-            CartOrder.countDocuments({ userId: { $in: descendantIds } }),
+            CartOrder.countDocuments({ userId: { $in: scopeIds } }),
             CartOrder.aggregate([
-                { $match: { userId: { $in: descendantIds }, status: { $ne: 'cancelled' } } },
+                { $match: { userId: { $in: scopeIds }, status: { $ne: 'cancelled' } } },
                 { $group: { _id: null, total: { $sum: '$totalAmount' } } },
             ]),
-            CartOrder.countDocuments({ userId: { $in: descendantIds }, status: 'pending' }),
-            Target.countDocuments({ assignedTo: { $in: [memberId, ...descendantIds] } }),
+            CartOrder.countDocuments({ userId: { $in: scopeIds }, status: 'pending' }),
+            // Only targets whose period is running right now
+            Target.countDocuments({ assignedTo: { $in: scopeIds }, ...activePeriod }),
+            Target.find({ assignedTo: memberId, ...activePeriod }).lean(),
         ]);
 
-        // Target achievement for this member
-        const { start, end } = getPeriodBounds('monthly');
-        const myTargets = await Target.find({
-            assignedTo: memberId,
-            periodStart: { $gte: start },
-            periodEnd: { $lte: end },
-        }).lean();
-
+        // Average progress of my currently running targets, each capped at 100%
+        await computeTargetAchievement(myTargets);
         let targetAchievement = 0;
         if (myTargets.length > 0) {
             const totalPct = myTargets.reduce((sum, t) => {
-                return sum + (t.targetValue > 0 ? (t.achieved / t.targetValue) * 100 : 0);
+                const pct = t.targetValue > 0 ? (t.achieved / t.targetValue) * 100 : 0;
+                return sum + Math.min(pct, 100);
             }, 0);
             targetAchievement = Math.round(totalPct / myTargets.length);
         }
@@ -508,31 +575,14 @@ module.exports.getMyTeam = async (req, res) => {
             .sort({ level: -1, name: 1 })
             .lean();
 
-        // Enrich with child counts and order stats
+        // Enrich with child counts and order stats (member + their whole sub-team)
         const enriched = await Promise.all(
             members.map(async (m) => {
                 const [childCount, orderStats] = await Promise.all([
                     HierarchyMember.countDocuments({ parentId: m._id }),
-                    CartOrder.aggregate([
-                        {
-                            $match: {
-                                $or: [
-                                    { userId: m._id },
-                                    { userId: { $in: await getDescendantIds(m._id, m.level).then(ids => ids) } },
-                                ],
-                                status: { $ne: 'cancelled' },
-                            },
-                        },
-                        { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$totalAmount' } } },
-                    ]),
+                    getSubtreeOrderStats(m._id),
                 ]);
-
-                return {
-                    ...m,
-                    childCount,
-                    totalOrders: orderStats[0]?.totalOrders ?? 0,
-                    totalRevenue: orderStats[0]?.totalRevenue ?? 0,
-                };
+                return { ...m, childCount, ...orderStats };
             })
         );
 
@@ -558,13 +608,25 @@ module.exports.getMemberDetail = async (req, res) => {
             return res.status(403).json({ success: false, message: 'Access denied' });
         }
 
-        const [subTeam, targets, orderStats] = await Promise.all([
+        const [subTeamMembers, targets, orderStats] = await Promise.all([
             HierarchyMember.find({ parentId: memberId }).select('-password').lean(),
             Target.find({ assignedTo: memberId }).sort({ createdAt: -1 }).limit(10).lean(),
-            CartOrder.aggregate([
-                { $match: { userId: new mongoose.Types.ObjectId(memberId), status: { $ne: 'cancelled' } } },
-                { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$totalAmount' } } },
-            ]),
+            // Member's own orders + everyone below them
+            getSubtreeOrderStats(memberId),
+        ]);
+
+        // Each direct report's totals also include their own sub-team
+        const [subTeam] = await Promise.all([
+            Promise.all(
+                subTeamMembers.map(async (s) => {
+                    const [childCount, stats] = await Promise.all([
+                        HierarchyMember.countDocuments({ parentId: s._id }),
+                        getSubtreeOrderStats(s._id),
+                    ]);
+                    return { ...s, childCount, ...stats };
+                })
+            ),
+            computeTargetAchievement(targets),
         ]);
 
         res.json({
@@ -572,7 +634,7 @@ module.exports.getMemberDetail = async (req, res) => {
             member,
             subTeam,
             targets,
-            orderStats: orderStats[0] ?? { totalOrders: 0, totalRevenue: 0 },
+            orderStats,
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -668,6 +730,8 @@ module.exports.getTargets = async (req, res) => {
             .populate('assignedBy', 'name')
             .sort({ createdAt: -1 })
             .lean();
+
+        await computeTargetAchievement(targets);
 
         const enriched = targets.map((t) => ({
             ...t,
@@ -1203,12 +1267,8 @@ module.exports.getReports = async (req, res) => {
             case 'weekly':
                 periodStart = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
                 previousStart = new Date(now.getFullYear(), now.getMonth() - 2, now.getDate());
-                dateFormat = '%Y-W%V';
-                break;
-            case 'quarterly':
-                periodStart = new Date(now.getFullYear() - 1, 0, 1);
-                previousStart = new Date(now.getFullYear() - 2, 0, 1);
-                dateFormat = '%Y-Q';
+                // %G = ISO week-numbering year, so late-December weeks get the right year
+                dateFormat = '%G-W%V';
                 break;
             case 'monthly':
             default:
@@ -1228,10 +1288,26 @@ module.exports.getReports = async (req, res) => {
                     },
                 },
                 {
+                    // Units = boxes ordered: sum of `quantity` over the order's items
+                    // (items is stored as an object keyed by product id)
+                    $addFields: {
+                        units: {
+                            $sum: {
+                                $map: {
+                                    input: { $objectToArray: { $ifNull: ['$items', {}] } },
+                                    as: 'i',
+                                    in: { $ifNull: ['$$i.v.quantity', 0] },
+                                },
+                            },
+                        },
+                    },
+                },
+                {
                     $group: {
-                        _id: { $dateToString: { format: dateFormat, date: '$createdAt' } },
+                        _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: 'Asia/Kolkata' } },
                         revenue: { $sum: '$totalAmount' },
                         orderCount: { $sum: 1 },
+                        unitsSold: { $sum: '$units' },
                     },
                 },
                 { $sort: { _id: 1 } },
@@ -1254,11 +1330,11 @@ module.exports.getReports = async (req, res) => {
                 period: e._id,
                 revenue: e.revenue,
                 orderCount: e.orderCount,
-                unitsSold: 0, // Could be computed from items if needed
+                unitsSold: e.unitsSold,
             })),
             totalRevenue: entries.reduce((sum, e) => sum + e.revenue, 0),
             totalOrders: entries.reduce((sum, e) => sum + e.orderCount, 0),
-            totalUnits: 0,
+            totalUnits: entries.reduce((sum, e) => sum + e.unitsSold, 0),
             previousPeriodRevenue: previousRevenue[0]?.total ?? 0,
         };
 

@@ -77,7 +77,7 @@ module.exports.saveCart = async (req, res) => {
             return res.status(400).json({ success: false, message: "Cart is required" });
         }
         const callerLevel = req.user.level ?? 1;
-        let userId = req.user._id;
+        let userId = req.user.id || req.user._id;
         if (onBehalfOf && callerLevel >= 6) {
             userId = onBehalfOf;
         }
@@ -123,7 +123,7 @@ module.exports.saveCart = async (req, res) => {
 module.exports.fetchCart = async (req, res) => {
     try {
         const callerLevel = req.user.level ?? 1;
-        let userId = req.user._id;
+        let userId = req.user.id || req.user._id;
         if (req.query.onBehalfOf && callerLevel >= 6) {
             userId = req.query.onBehalfOf;
         }
@@ -163,7 +163,8 @@ module.exports.fetchCart = async (req, res) => {
 
 module.exports.placeOrder = async (req, res) => {
     try {
-        const { items, totalAmount, paymentMethod } = req.body;
+        // totalAmount from the app is ignored — the total is computed below from stored prices
+        const { items, paymentMethod } = req.body;
 
         // ── Resolve user identity: support both HierarchyMember (levels 1-5) and legacy User ──
         const HierarchyMember = require('../models/HierarchyMember.model');
@@ -196,7 +197,7 @@ module.exports.placeOrder = async (req, res) => {
                     }
                 }
             } catch (err) {
-                console.warn('Could not resolve pricing for order, using frontend/base prices:', err.message);
+                console.warn('Could not resolve pricing for order, using base prices:', err.message);
             }
         }
 
@@ -211,14 +212,17 @@ module.exports.placeOrder = async (req, res) => {
             }
         }
 
-        // Build itemsData map from request using resolved custom pricing
+        // Build itemsData from stored prices only: member/ancestor custom price, else the product's base price.
+        // Only productId and quantity are taken from the request.
         const itemsData = new Map();
-        for (const [key, item] of Object.entries(normalizedItems)) {
+        let computedTotal = 0;
+        for (const [key, item] of Object.entries(normalizedItems || {})) {
             const productId = item.productId || item._id || key;
-            const quantity = item.quantity || 1;
+            const quantity = Math.max(1, Math.floor(Number(item.quantity) || 1));
             const product = await Product.findById(productId);
             if (product) {
-                const resolvedPrice = pricingMap[product._id.toString()] ?? item.retailPrice ?? product.retailPrice;
+                const resolvedPrice = pricingMap[product._id.toString()] ?? product.retailPrice;
+                computedTotal += resolvedPrice * (product.boxQuantity || 1) * quantity;
                 itemsData.set(productId, {
                     _id: product._id.toString(),
                     name: product.name,
@@ -233,6 +237,10 @@ module.exports.placeOrder = async (req, res) => {
             } else {
                 console.warn(`Product not found: ${productId}`);
             }
+        }
+
+        if (itemsData.size === 0) {
+            return res.status(400).json({ success: false, message: 'No valid products in the order' });
         }
 
         let userId, shippingAddress, superStockistId;
@@ -272,7 +280,8 @@ module.exports.placeOrder = async (req, res) => {
             userId,
             superStockistId,
             items: itemsData,
-            totalAmount: Math.round(totalAmount / 10) * 10,
+            // Same "round to nearest ₹10" the app shows in the cart
+            totalAmount: Math.round(computedTotal / 10) * 10,
             paymentMethod,
             shippingAddress,
         });
@@ -345,37 +354,9 @@ module.exports.adminFetchOrders = async (req, res) => {
     }
 }
 
-// Helper to update target achievements when an order is delivered or moved away from delivered
-async function updateTargetAchievement(order, oldStatus, newStatus) {
-    if (oldStatus === newStatus) return;
-
-    const isDeliveredNow = newStatus === 'delivered';
-    const wasDeliveredBefore = oldStatus === 'delivered';
-
-    if (isDeliveredNow === wasDeliveredBefore) return;
-
-    const HierarchyMember = require('../models/HierarchyMember.model');
-    const buyer = await HierarchyMember.findById(order.userId);
-    if (!buyer || !buyer.parentId) return;
-
-    const Target = require('../models/Target.model');
-    const activeTargets = await Target.find({
-        assignedTo: buyer.parentId,
-        periodStart: { $lte: order.createdAt },
-        periodEnd: { $gte: order.createdAt }
-    });
-
-    const multiplier = isDeliveredNow ? 1 : -1;
-
-    for (const target of activeTargets) {
-        if (target.targetType === 'revenue') {
-            target.achieved = Math.max(0, target.achieved + (order.totalAmount * multiplier));
-        } else if (target.targetType === 'orders') {
-            target.achieved = Math.max(0, target.achieved + (1 * multiplier));
-        }
-        await target.save();
-    }
-}
+// Target progress is computed from delivered orders when targets are read
+// (see computeTargetAchievement in Hierarchy.controller.js), so status changes
+// need no bookkeeping here.
 
 module.exports.adminUpdateOrderStatus = async (req, res) => {
     try {
@@ -388,7 +369,6 @@ module.exports.adminUpdateOrderStatus = async (req, res) => {
         if (!(await assertOrderInScope(req, existing))) {
             return res.status(403).json({ success: false, message: "Forbidden" });
         }
-        const oldStatus = existing.status;
         const order = await CartOrder.findByIdAndUpdate(
             orderId,
             { status: status },
@@ -396,12 +376,6 @@ module.exports.adminUpdateOrderStatus = async (req, res) => {
         );
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found" });
-        }
-
-        try {
-            await updateTargetAchievement(order, oldStatus, status);
-        } catch (tErr) {
-            console.error('Target sync failed:', tErr.message);
         }
 
         getIo().emit('orderStatusUpdated', { success: true, message: "Order status updated successfully", order });
@@ -463,7 +437,6 @@ module.exports.updateOrderStatus = async (req, res) => {
             }
         }
 
-        const oldStatus = existing.status;
         const order = await CartOrder.findByIdAndUpdate(
             orderId,
             { status: status },
@@ -471,12 +444,6 @@ module.exports.updateOrderStatus = async (req, res) => {
         );
         if (!order) {
             return res.status(404).json({ success: false, message: "Order not found" });
-        }
-
-        try {
-            await updateTargetAchievement(order, oldStatus, status);
-        } catch (tErr) {
-            console.error('Target sync failed:', tErr.message);
         }
 
         getIo().emit('orderStatusUpdated', { success: true, message: "Order status updated successfully", order });
@@ -558,7 +525,7 @@ module.exports.adminFetchMonthlySalesData = async (req, res) => {
             {
                 $group: {
                     _id: {
-                        $month: "$createdAt"
+                        $month: { date: "$createdAt", timezone: "Asia/Kolkata" }
                     },
                     totalSales: { $sum: "$totalAmount" }
                 }

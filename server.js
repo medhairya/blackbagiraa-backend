@@ -1,3 +1,7 @@
+// All business dates (today / this week / this month, report grouping) are in IST,
+// regardless of the host's timezone (Render runs in UTC). Must be set before any Date use.
+process.env.TZ = 'Asia/Kolkata';
+
 const http = require('http');
 const app = require('./app');
 const PORT = process.env.PORT || 4000;
