@@ -52,11 +52,11 @@ userSchema.pre('save', async function (next) {
     next();
 });
 
-userSchema.methods.generateAuthToken = function () {
+userSchema.methods.generateAuthToken = function (expiresIn = '12h') {
     const token = jwt.sign(
         { _id: this._id, role: 'user' },
         process.env.JWT_SECRET,
-        { expiresIn: '12h' }
+        { expiresIn }
     );
     return token;
 };

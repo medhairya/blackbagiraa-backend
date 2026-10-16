@@ -10,10 +10,13 @@ const blacklistSchema = new mongoose.Schema({
         type: String,
         required: true,
     },
-    createdAt: {
+    // Entry is removed once the token itself would have expired.
+    // Kept separate from the old `createdAt` TTL (12h) so long-lived
+    // "Stay logged in" tokens stay blocked for their full lifetime.
+    expiresAt: {
         type: Date,
-        default: Date.now,
-        expires: '12h' 
+        required: true,
+        expires: 0,
     },
 });
 

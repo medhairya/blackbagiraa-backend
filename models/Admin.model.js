@@ -55,11 +55,11 @@ adminSchema.pre('save', async function (next) {
     next();
 });
 
-adminSchema.methods.generateToken = function () {
+adminSchema.methods.generateToken = function (expiresIn = '12h') {
     return jwt.sign(
         { id: this._id, contactNumber: this.contactNumber, role: this.role },
         process.env.JWT_SECRET,
-        { expiresIn: '12h' }
+        { expiresIn }
     );
 };
 

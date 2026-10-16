@@ -1,5 +1,6 @@
 const User = require('../models/User.model');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const { createUser, resolveSuperStockist, normalizeStockistCode } = require('../services/User.service');
 const Blacklist = require('../models/Blacklist.model');
 const Admin = require('../models/Admin.model');
@@ -60,7 +61,12 @@ module.exports.validateStockistCode = async (req, res) => {
 
 module.exports.loginUser = async (req, res) => {
     try {
-        const { contactNumber, password, role } = req.body;
+        const { contactNumber, password, rememberMe } = req.body;
+
+        // "Stay logged in" → long-lived token; otherwise the normal 12h session
+        const stayLoggedIn = rememberMe === true || rememberMe === 'true';
+        const expiresIn = stayLoggedIn ? '365d' : '12h';
+        const cookieMaxAge = (stayLoggedIn ? 365 * 24 : 12) * 60 * 60 * 1000;
 
         // ── Try HierarchyMember first (new system) ──────────────────────────
         const HierarchyMember = require('../models/HierarchyMember.model');
@@ -74,8 +80,8 @@ module.exports.loginUser = async (req, res) => {
             if (!isMatch) {
                 return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
             }
-            const token = hierarchyMember.generateToken();
-            res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+            const token = hierarchyMember.generateToken(expiresIn);
+            res.cookie('token', token, { httpOnly: true, maxAge: cookieMaxAge });
             return res.status(200).json({
                 success: true,
                 message: 'Login successful',
@@ -105,8 +111,8 @@ module.exports.loginUser = async (req, res) => {
             if (!isMatch) {
                 return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
             }
-            const token = admin.generateToken();
-            res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+            const token = admin.generateToken(expiresIn);
+            res.cookie('token', token, { httpOnly: true, maxAge: cookieMaxAge });
 
             // Map legacy role to level
             const level = admin.role === 'main_admin' ? 7 : 5;
@@ -125,8 +131,8 @@ module.exports.loginUser = async (req, res) => {
             if (!isMatch) {
                 return res.status(400).json({ success: false, message: 'Invalid contact number or password' });
             }
-            const token = user.generateAuthToken();
-            res.cookie('token', token, { httpOnly: true, maxAge: 12 * 60 * 60 * 1000 });
+            const token = user.generateAuthToken(expiresIn);
+            res.cookie('token', token, { httpOnly: true, maxAge: cookieMaxAge });
             return res.status(200).json({
                 success: true,
                 message: 'Login successful',
@@ -148,7 +154,12 @@ module.exports.logoutUser = async (req, res) => {
     const token = req.cookies.token || (authHeader && authHeader.split(' ')[1]);
     try {
         if (token) {
-            await Blacklist.create({ token, reason: 'User logged out' });
+            // Keep the token blocked until it would have expired on its own
+            const decoded = jwt.decode(token);
+            const expiresAt = decoded?.exp
+                ? new Date(decoded.exp * 1000)
+                : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+            await Blacklist.create({ token, reason: 'User logged out', expiresAt });
         }
         res.clearCookie('token');
         res.status(200).json({ success: true, message: 'Logout successful' });

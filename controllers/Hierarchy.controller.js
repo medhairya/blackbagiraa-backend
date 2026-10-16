@@ -1279,6 +1279,16 @@ module.exports.updateProfile = async (req, res) => {
         const memberId = req.user.id || req.user._id;
         const { name, shopName, password, inviteCode } = req.body;
 
+        // Members cannot change their own password from the profile.
+        // Passwords are changed only by Managers (L6) / Directors (L7) via
+        // PATCH /members/:memberId/password.
+        if (password) {
+            return res.status(403).json({
+                success: false,
+                message: 'Password cannot be changed from the profile. Contact your Manager or Director.',
+            });
+        }
+
         const member = await HierarchyMember.findById(memberId);
         if (!member) {
             return res.status(404).json({ success: false, message: 'Member not found' });
@@ -1297,12 +1307,6 @@ module.exports.updateProfile = async (req, res) => {
                 }
                 member.inviteCode = cleanCode;
             }
-        }
-
-        // Update password if provided
-        if (password) {
-            const bcrypt = require('bcryptjs');
-            member.password = await bcrypt.hash(password, 10);
         }
 
         await member.save();

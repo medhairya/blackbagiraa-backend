@@ -117,7 +117,7 @@ hierarchyMemberSchema.pre('save', async function (next) {
 });
 
 // ─── Methods ───────────────────────────────────────────────────────────────────
-hierarchyMemberSchema.methods.generateToken = function () {
+hierarchyMemberSchema.methods.generateToken = function (expiresIn = '12h') {
     return jwt.sign(
         {
             id: this._id,
@@ -126,7 +126,7 @@ hierarchyMemberSchema.methods.generateToken = function () {
             roleName: this.roleName,
         },
         process.env.JWT_SECRET,
-        { expiresIn: '12h' }
+        { expiresIn }
     );
 };
 
