@@ -948,8 +948,16 @@ module.exports.createPriceRequest = async (req, res) => {
             return res.status(400).json({ success: false, message: 'productId, targetMemberId, and requestedPrice are required.' });
         }
 
+        // Current price = member-specific override if set, otherwise the product's default retail price
         const existing = await ProductPricing.findOne({ productId, memberId: targetMemberId }).lean();
-        const currentPrice = existing?.retailPrice ?? 0;
+        let currentPrice = existing?.retailPrice;
+        if (currentPrice === undefined || currentPrice === null) {
+            const product = await Product.findById(productId).select('retailPrice').lean();
+            if (!product) {
+                return res.status(404).json({ success: false, message: 'Product not found.' });
+            }
+            currentPrice = product.retailPrice ?? 0;
+        }
         const requestedBy = req.user.id || req.user._id;
 
         const priceRequest = await PriceChangeRequest.create({
@@ -989,12 +997,14 @@ module.exports.getPriceRequests = async (req, res) => {
         const requests = await PriceChangeRequest.find(filter)
             .populate('requestedBy', 'name')
             .populate('targetMemberId', 'name level roleName inviteCode')
-            .populate('productId', 'name')
+            .populate('productId', 'name retailPrice')
             .sort({ createdAt: -1 })
             .lean();
 
         const enriched = requests.map((r) => ({
             ...r,
+            // Older requests stored 0 when no member override existed — show the product default instead
+            currentPrice: r.currentPrice ? r.currentPrice : (r.productId?.retailPrice ?? 0),
             requestedByName: r.requestedBy?.name ?? 'Unknown',
             targetMemberName: r.targetMemberId?.name ?? 'Unknown',
             targetMemberLevel: r.targetMemberId?.level,
@@ -1024,6 +1034,12 @@ module.exports.updatePriceRequest = async (req, res) => {
         const request = await PriceChangeRequest.findById(requestId);
         if (!request) {
             return res.status(404).json({ success: false, message: 'Request not found' });
+        }
+
+        // Backfill older requests that stored 0 when no member override existed
+        if (!request.currentPrice) {
+            const product = await Product.findById(request.productId).select('retailPrice').lean();
+            if (product?.retailPrice) request.currentPrice = product.retailPrice;
         }
 
         request.status = status;
