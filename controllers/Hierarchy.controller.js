@@ -80,7 +80,7 @@ async function getSubtreeOrderStats(memberId) {
 }
 
 /**
- * Recompute `achieved` for revenue/orders targets from delivered orders placed in the
+ * Recompute `achieved` for revenue/orders targets from shipped (or delivered) orders placed in the
  * target's period by the assignee or anyone below them. This credits every level up to
  * the Director, includes orders delivered before the target was created, and stays
  * correct when an order's status changes back and forth. Changed values are written back.
@@ -103,7 +103,9 @@ async function computeTargetAchievement(targets) {
             {
                 $match: {
                     userId: { $in: subtreeCache.get(assigneeId) },
-                    status: 'delivered',
+                    // Orders count once shipped (the Orders tab has no "Delivered" step).
+                    // 'delivered' is kept so any older delivered orders still count.
+                    status: { $in: ['shipped', 'delivered'] },
                     createdAt: { $gte: t.periodStart, $lt: t.periodEnd },
                 },
             },
