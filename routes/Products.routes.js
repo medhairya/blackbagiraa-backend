@@ -16,6 +16,7 @@ const {
     adminAddProduct,
     adminDeleteProduct,
     adminUpdateProduct,
+    adminReorderProducts,
     productImage,
 } = require('../controllers/Products.controller');
 const authMiddleware = require('../middlewares/authMiddleware');
@@ -49,5 +50,6 @@ router.get('/admin/fetchOrderStatusData', ...staffOnly, adminFetchOrderStatusDat
 router.post('/admin/add-product', ...catalogManagers, uploder, adminAddProduct);
 router.delete('/admin/delete-product/:productId', ...catalogManagers, adminDeleteProduct);
 router.put('/admin/update-product', ...catalogManagers, uploder, adminUpdateProduct);
+router.put('/admin/reorder-products', ...catalogManagers, adminReorderProducts);
 
 module.exports = router;

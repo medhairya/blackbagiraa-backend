@@ -8,6 +8,9 @@ const productSchema = new mongoose.Schema({
     retailPrice: { type: Number, required: true },
     scheme: { type: String },
     category: { type: String, required: true },
+    // Position in the catalog, set by dragging on the website (lower = earlier).
+    // Missing on products that were never rearranged; those sort first, oldest first.
+    sortOrder: { type: Number },
     createdAt: { type: Date, default: Date.now }
 });
 

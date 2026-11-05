@@ -10,6 +10,9 @@ const { bufferToBase64 } = require('../utils/uplode');
 const { getOrderScope, getDistributorScope, assertOrderInScope } = require('../middlewares/roleHelpers');
 const crypto = require('crypto');
 
+/** Catalog display order: rearranged position first, then oldest first. */
+const CATALOG_SORT = { sortOrder: 1, createdAt: 1, _id: 1 };
+
 /** Short fingerprint of a photo — changes whenever the photo changes. */
 function imageVersion(image) {
     return crypto.createHash('md5').update(image || '').digest('hex').slice(0, 10);
@@ -62,7 +65,7 @@ module.exports.productImage = async (req, res) => {
 
 module.exports.fetchProducts = async (req, res) => {
     try {
-        const products = await Product.find();
+        const products = await Product.find().sort(CATALOG_SORT);
         if (!products) {
             return res.status(404).json({ success: false, message: "No products found" });
         }
@@ -653,7 +656,10 @@ module.exports.adminAddProduct = async (req, res) => {
         const imageBase64 = bufferToBase64(productImg.buffer, productImg.mimetype);
         
         const categoryDe = await Category.findById(category);
+        // New products go to the end of the list (only matters once the list has been rearranged)
+        const last = await Product.findOne({ sortOrder: { $ne: null } }).sort({ sortOrder: -1 }).select('sortOrder').lean();
         const newProduct = new Product({
+            sortOrder: last ? last.sortOrder + 1 : undefined,
             name: name,
             image: imageBase64,
             MRP: MRP,
@@ -737,3 +743,39 @@ module.exports.adminUpdateProduct = async (req, res) => {
         res.status(500).json({ success: false, message: "Internal server error" })
     }
 }
+
+/**
+ * PUT /api/products/admin/reorder-products — body { productIds: [...] }, every product
+ * exactly once, in the new display order. Rejected if the catalog changed meanwhile.
+ */
+module.exports.adminReorderProducts = async (req, res) => {
+    try {
+        const { productIds } = req.body || {};
+        if (!Array.isArray(productIds) || productIds.length === 0
+            || !productIds.every((id) => typeof id === 'string' && mongoose.Types.ObjectId.isValid(id))) {
+            return res.status(400).json({ success: false, message: 'productIds must be a list of product ids' });
+        }
+        if (new Set(productIds).size !== productIds.length) {
+            return res.status(400).json({ success: false, message: 'A product appears more than once' });
+        }
+
+        const existing = await Product.find({}, '_id').lean();
+        const existingIds = new Set(existing.map((p) => String(p._id)));
+        if (existingIds.size !== productIds.length || !productIds.every((id) => existingIds.has(id))) {
+            return res.status(400).json({
+                success: false,
+                message: 'Products were added or removed since you opened this list. Reload and try again.',
+            });
+        }
+
+        await Product.bulkWrite(productIds.map((id, index) => ({
+            updateOne: { filter: { _id: id }, update: { $set: { sortOrder: index } } },
+        })));
+
+        getIo().emit('productsReordered', { productIds });
+        res.status(200).json({ success: true, message: 'Product order saved' });
+    } catch (error) {
+        console.log('adminReorderProducts error:', error);
+        res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+};
