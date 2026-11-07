@@ -1,5 +1,5 @@
 /**
- * Restore collections from a backup made by scripts/clearTestData.js.
+ * Restore collections from a backup in Documents/db-backups (Extended JSON, one file per collection).
  *
  * For each <collection>.json in the folder, the collection is REPLACED with the
  * backed-up documents (ObjectIds and dates preserved).
